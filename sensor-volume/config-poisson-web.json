@@ -1,0 +1,26 @@
+{
+  "mode": "netflow5",
+  "target": "192.168.1.19",
+  "port": 2055,
+  "rate": 15,
+  "rate_model": "poisson",
+  "records": 5,
+  "scenarios": [
+    {
+      "name": "Web Traffic",
+      "src_cidr": "10.10.0.0/16",
+      "dst_cidr": "172.16.0.0/24",
+      "dst_ports": [80, 443],
+      "protos": [6],
+      "weight": 80
+    },
+    {
+      "name": "DNS Queries",
+      "src_cidr": "10.10.0.0/16",
+      "dst_cidr": "8.8.8.8/32",
+      "dst_ports": [53],
+      "protos": [17],
+      "weight": 20
+    }
+  ]
+}

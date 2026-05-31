@@ -1,0 +1,20 @@
+{
+  "mode": "ipfix",
+  "target": "192.168.1.19",
+  "port": 2055,
+  "rate": 100,
+  "rate_model": "bursty",
+  "records": 30,
+  "scenarios": [
+    {
+      "name": "Datacenter Backup",
+      "src_cidr": "10.0.0.0/8",
+      "dst_cidr": "10.200.0.0/16",
+      "min_pkts": 10000,
+      "max_pkts": 50000,
+      "min_bytes": 10000000,
+      "max_bytes": 100000000,
+      "weight": 100
+    }
+  ]
+}

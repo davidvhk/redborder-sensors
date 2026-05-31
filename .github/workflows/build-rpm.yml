@@ -1,0 +1,55 @@
+name: Build and Test redBorder Sensors
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-rpm:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:38
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          dnf install -y rpm-build golang make gcc wget
+
+      - name: Build RPM
+        run: ./build-rpm.sh
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: redborder-sensors-rpm
+          path: /tmp/rpmbuild-sensors/RPMS/x86_64/*.rpm
+
+  test-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+
+      - name: Compile agents
+        run: make
+
+      - name: Verify static linking
+        run: |
+          ldd sensor-volume/telemetry-agent 2>&1 | grep "not a dynamic executable"
+          ldd sensor-volume/ips-agent 2>&1 | grep "not a dynamic executable"
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: redborder-sensor-binaries
+          path: sensor-volume/

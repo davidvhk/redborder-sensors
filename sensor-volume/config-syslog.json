@@ -1,0 +1,35 @@
+{
+  "mode": "syslog",
+  "target": "10.1.33.160",
+  "port": 514,
+  "rate": 2,
+  "scenarios": [
+    {
+      "name": "Security Alerts",
+      "weight": 30,
+      "events": [
+        "IDS: ALERT - Possible SQL Injection attempt from 10.45.1.22",
+        "IDS: CRITICAL - Buffer Overflow attempt detected on web-server-01",
+        "WALL: REJECT - Unatuthorized SSH attempt from internal user 'guest'"
+      ]
+    },
+    {
+      "name": "Web Proxy",
+      "weight": 50,
+      "events": [
+        "PROXY: ALLOW - user: david url: https://github.com/redborder",
+        "PROXY: BLOCK - user: anonymous url: http://malware-site.top",
+        "PROXY: CACHE_HIT - url: https://google.com"
+      ]
+    },
+    {
+      "name": "System Health",
+      "weight": 20,
+      "events": [
+        "SYS: INFO - CPU Usage at 45%",
+        "SYS: WARN - Disk Partition /var is 85% full",
+        "SYS: INFO - Backup completed successfully"
+      ]
+    }
+  ]
+}

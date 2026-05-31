@@ -1,0 +1,10 @@
+{
+  "user": "redborder",
+  "password": "redborder",
+  "sensors": {
+    "sys_temp":  { "id": 1, "name": "System Temp", "value": 38.0, "unit": "C" },
+    "pch_temp":  { "id": 2, "name": "PCH Temp", "value": 48.0, "unit": "C" },
+    "peri_temp": { "id": 3, "name": "Peripheral Temp", "value": 32.0, "unit": "C" },
+    "fan_speed": { "id": 4, "name": "Fan Speed", "value": 3500.0, "unit": "RPM" }
+  }
+}

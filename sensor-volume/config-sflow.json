@@ -1,0 +1,42 @@
+{
+  "mode": "sflow",
+  "target": "192.168.1.100",
+  "port": 6343,
+  "rate": 10,
+  "rate_model": "poisson",
+  "sampling_rate": 256,
+  "records": 5,
+  "source_id": 1001,
+  "scenarios": [
+    {
+      "name": "HTTP Web Traffic",
+      "src_cidr": "10.0.0.0/24",
+      "dst_cidr": "1.1.1.1/32",
+      "dst_ports": [80, 443],
+      "protos": [6],
+      "min_bytes": 1024,
+      "max_bytes": 15000,
+      "weight": 70
+    },
+    {
+      "name": "DNS Lookups",
+      "src_cidr": "10.0.0.0/24",
+      "dst_cidr": "8.8.8.8/32",
+      "dst_ports": [53],
+      "protos": [17],
+      "min_bytes": 64,
+      "max_bytes": 512,
+      "weight": 20
+    },
+    {
+      "name": "SSH Management",
+      "src_cidr": "172.16.0.0/24",
+      "dst_cidr": "10.0.0.5/32",
+      "dst_ports": [22],
+      "protos": [6],
+      "min_bytes": 2000,
+      "max_bytes": 50000,
+      "weight": 10
+    }
+  ]
+}

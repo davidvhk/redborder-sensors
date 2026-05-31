@@ -1,0 +1,22 @@
+{
+  "mode": "netflow5",
+  "target": "192.168.1.19",
+  "port": 2055,
+  "rate": 10,
+  "rate_model": "jitter",
+  "records": 10,
+  "scenarios": [
+    {
+      "name": "Standard Web",
+      "src_cidr": "192.168.100.0/24",
+      "dst_cidr": "0.0.0.0/0",
+      "dst_ports": [80, 443],
+      "protos": [6],
+      "min_pkts": 10,
+      "max_pkts": 100,
+      "min_bytes": 1024,
+      "max_bytes": 65536,
+      "weight": 100
+    }
+  ]
+}

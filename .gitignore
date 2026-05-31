@@ -1,0 +1,24 @@
+# Binaries
+sensor-volume/telemetry-agent
+sensor-volume/ips-agent
+sensor-volume/snmp-agent
+sensor-volume/ipmi-agent
+sensor-volume/server
+sensor-volume/example
+
+# Logs and State
+/tmp/redborder-sensors/
+/tmp/redborder-sensor-*
+sensor-volume/ips-state-*.json
+sensor-volume/ips-state.json
+wget-log
+
+# RPM Build
+/tmp/rpmbuild-sensors/
+
+# OS/Editor artifacts
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.log

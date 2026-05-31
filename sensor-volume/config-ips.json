@@ -1,0 +1,22 @@
+{
+  "manager_url": "https://192.168.1.25/api/v1/sensors",
+  "api_access_key": "",
+  "target": "127.0.0.1",
+  "port": 514,
+  "rate": 10,
+  "insecure": true,
+  "domain": "redborder.cluster",
+  "scenarios": [
+    {
+      "name": "Web Attack",
+      "messages": ["INDICATOR-SQL injection attempt", "Cross-site scripting attempt"],
+      "sig_id": 1000001,
+      "weight": 50,
+      "priority": 1,
+      "src_cidr": "10.0.0.0/8",
+      "dst_cidr": "192.168.1.10/32",
+      "protos": ["TCP"],
+      "ports": [80, 443]
+    }
+  ]
+}
