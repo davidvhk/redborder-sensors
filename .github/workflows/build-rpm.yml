@@ -18,7 +18,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          dnf install -y rpm-build golang make gcc wget
+          dnf install -y rpm-build golang make gcc wget glibc-static
 
       - name: Build RPM
         run: ./build-rpm.sh

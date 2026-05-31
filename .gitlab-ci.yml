@@ -9,7 +9,7 @@ build_rpm:
   stage: build
   image: fedora:38
   before_script:
-    - dnf install -y rpm-build golang make gcc wget
+    - dnf install -y rpm-build golang make gcc wget glibc-static
   script:
     - ./build-rpm.sh
   artifacts:

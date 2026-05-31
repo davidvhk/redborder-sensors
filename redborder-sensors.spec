@@ -12,6 +12,7 @@ Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  golang
 BuildRequires:  gcc
+BuildRequires:  glibc-static
 Requires:       bash
 Requires:       iproute
 Requires:       iptables
