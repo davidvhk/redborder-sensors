@@ -53,6 +53,7 @@ sudo sensor-ctl.sh start s1 /sensor-data/telemetry-agent -target 10.0.0.1 -rate 
 Run an additional command inside an already active sandbox.
 ```bash
 sudo sensor-ctl.sh exec s1 ping -c 3 8.8.8.8
+sudo sensor-ctl.sh exec -d s1 /sensor-data/snmp-agent -config /sensor-data/config-snmp.json
 ```
 
 ### 3. redborder sensor monitor
