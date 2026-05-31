@@ -1,0 +1,34 @@
+# redBorder Sensors Sandbox CI/CD Pipeline
+
+stages:
+  - build
+  - test
+  - release
+
+build_rpm:
+  stage: build
+  image: fedora:38
+  before_script:
+    - dnf install -y rpm-build golang make gcc wget
+  script:
+    - ./build-rpm.sh
+  artifacts:
+    paths:
+      - /tmp/rpmbuild-sensors/RPMS/x86_64/*.rpm
+    expire_in: 1 week
+  only:
+    - main
+    - tags
+
+test_binaries:
+  stage: test
+  image: golang:1.20
+  script:
+    - make
+    # Basic verification that binaries are static and functional
+    - ldd sensor-volume/telemetry-agent 2>&1 | grep "not a dynamic executable"
+    - ldd sensor-volume/ips-agent 2>&1 | grep "not a dynamic executable"
+  artifacts:
+    paths:
+      - sensor-volume/
+    expire_in: 1 day

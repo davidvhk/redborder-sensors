@@ -14,7 +14,7 @@ jobs:
       image: fedora:38
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -24,7 +24,7 @@ jobs:
         run: ./build-rpm.sh
 
       - name: Upload RPM artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: redborder-sensors-rpm
           path: /tmp/rpmbuild-sensors/RPMS/x86_64/*.rpm
@@ -33,10 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: '1.20'
 
@@ -49,7 +49,7 @@ jobs:
           ldd sensor-volume/ips-agent 2>&1 | grep "not a dynamic executable"
 
       - name: Upload binary artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: redborder-sensor-binaries
           path: sensor-volume/
