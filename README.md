@@ -42,14 +42,35 @@ make
 ### 2. Start a redborder sensor
 Launch an IPS sensor with a specific name and configuration.
 ```bash
-sudo ./sensor-ctl.sh start ips1 /sensor-data/ips-agent -config /sensor-data/config-ips.json
+sudo sensor-ctl.sh start ips1 /sensor-data/ips-agent -config /sensor-data/config-ips.json
+```
+
+Launch a telemetry agent to generate NetFlow v5 traffic.
+```bash
+sudo sensor-ctl.sh start s1 /sensor-data/telemetry-agent -target 10.0.0.1 -rate 20 -model poisson
+```
+
+Run an additional command inside an already active sandbox.
+```bash
+sudo sensor-ctl.sh exec s1 ping -c 3 8.8.8.8
 ```
 
 ### 3. redborder sensor monitor
 View real-time resource usage across all active sensors.
 ```bash
-sudo ./sensor-ctl.sh stats
+sudo sensor-ctl.sh stats
 ```
+
+## Packaging (RPM)
+
+You can package the entire framework into an RPM for easy distribution on RHEL/Fedora-based systems.
+
+### Manual Build
+Ensure you have `rpm-build`, `golang`, `gcc`, `make`, and `glibc-static` installed on your host.
+```bash
+./build-rpm.sh
+```
+The resulting RPM will be available in `/tmp/rpmbuild-sensors/RPMS/x86_64/`.
 
 ## Networking Architecture
 
@@ -75,6 +96,9 @@ sudo sensor-chaos.sh delay ips1 100ms
 - Linux kernel with Namespace support (`CONFIG_NAMESPACES`).
 - `iproute2`, `iptables`, `util-linux`, `wget`.
 - Go (for building agents).
+
+### Automated Build
+The project includes CI/CD configurations for both **GitHub Actions** and **GitLab CI** (see below) that automatically build the RPM on every push to the `main` branch or when a new tag is created.
 
 ## CI/CD Pipeline
 GitHub Actions workflows are included in `.github/workflows/` to automate the RPM building process and binary verification. It uses a Fedora container to run the `build-rpm.sh` script and produces artifacts for each release.
