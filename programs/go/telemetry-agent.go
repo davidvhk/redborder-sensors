@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const VERSION = "v1.10 (2026-05-30)"
+const VERSION = "v1.11 (2026-06-02)"
 
 type NetFlowV5Header struct {
 	Version uint16; Count uint16; SysUptime uint32; UnixSecs uint32; UnixNanos uint32; FlowSequence uint32; EngineType uint8; EngineID uint8; SamplingInterval uint16
@@ -197,9 +197,7 @@ func getNextDelay(rate int, model string, rng *rand.Rand) time.Duration {
 func runNetFlowV5(addr string, cfg Config, debug bool) {
 	raddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil { fmt.Printf("[-] Error resolving address: %v\n", err); return }
-	conn, err := net.DialUDP("udp", nil, raddr)
-	if err != nil { fmt.Printf("[-] Error connecting: %v\n", err); return }
-	defer conn.Close()
+	var conn *net.UDPConn
 	boot := time.Now().Add(-100 * time.Second); var flowSeq uint32 = 0; rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	var pcapPkts []PcapPacket; pcapIdx := 0; localIP := getLocalIP()
 	if cfg.PcapFile != "" {
@@ -210,6 +208,15 @@ func runNetFlowV5(addr string, cfg Config, debug bool) {
 	}
 
 	for {
+		if conn == nil {
+			conn, err = net.DialUDP("udp", nil, raddr)
+			if err != nil {
+				fmt.Printf("[-] Error connecting: %v\n", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			localIP = getLocalIP()
+		}
 		buf := new(bytes.Buffer); now := time.Now(); uptime := uint32(time.Since(boot).Milliseconds())
 		binary.Write(buf, binary.BigEndian, NetFlowV5Header{Version: 5, Count: uint16(cfg.Records), SysUptime: uptime, UnixSecs: uint32(now.Unix()), UnixNanos: uint32(now.UnixNano() % 1000000000), FlowSequence: flowSeq, EngineType: cfg.EngineType, EngineID: cfg.EngineID})
 		flowSeq += uint32(cfg.Records)
@@ -227,37 +234,60 @@ func runNetFlowV5(addr string, cfg Config, debug bool) {
 			binary.Write(buf, binary.BigEndian, r)
 		}
 		data := buf.Bytes(); if debug { hexDump(data) }; _, err := conn.Write(data)
-		if err != nil { fmt.Printf("[-] Error sending V5: %v\n", err) } else { fmt.Printf("[+] Sent V5 (%d records)\n", cfg.Records) }
+		if err != nil {
+			fmt.Printf("[-] Error sending V5: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Printf("[+] Sent V5 (%d records)\n", cfg.Records)
+		}
 		time.Sleep(getNextDelay(cfg.Rate, cfg.RateModel, rng))
 	}
 }
 
 func runNetFlowV9(addr string, cfg Config, debug bool) {
-	conn, err := net.Dial("udp", addr)
-	if err != nil { fmt.Printf("[-] Error connecting: %v\n", err); return }
-	defer conn.Close(); boot := time.Now().Add(-100 * time.Second)
+	var conn net.Conn
+	var err error
+	boot := time.Now().Add(-100 * time.Second)
 	var seq uint32 = 0; rng := rand.New(rand.NewSource(time.Now().UnixNano())); lastTmpl := time.Now().Add(-1 * time.Hour)
 	fields := []NetFlowV9Field{{8, 4}, {12, 4}, {7, 2}, {11, 2}, {4, 1}, {1, 4}, {2, 4}}
 	var pcapPkts []PcapPacket; pcapIdx := 0; localIP := getLocalIP()
 	if cfg.PcapFile != "" {
-		var err error; pcapPkts, err = readPcap(cfg.PcapFile)
+		pcapPkts, err = readPcap(cfg.PcapFile)
 		if err != nil { fmt.Printf("[-] Error reading PCAP: %v\n", err); os.Exit(1) }
 		if len(pcapPkts) == 0 { fmt.Printf("[-] PCAP file contains no usable packets. Exiting.\n"); os.Exit(1) }
 		fmt.Printf("[+] Loaded %d packets from PCAP\n", len(pcapPkts))
 	}
 
 	sendV9Tmpl := func() {
+		if conn == nil { return }
 		buf := new(bytes.Buffer); uptime := uint32(time.Since(boot).Milliseconds())
 		binary.Write(buf, binary.BigEndian, NetFlowV9Header{Version: 9, Count: 1, SysUptime: uptime, UnixSecs: uint32(time.Now().Unix()), FlowSequence: seq, SourceID: cfg.SourceID})
 		seq++; binary.Write(buf, binary.BigEndian, uint16(0)); binary.Write(buf, binary.BigEndian, uint16(4+4+(len(fields)*4)))
 		binary.Write(buf, binary.BigEndian, uint16(257)); binary.Write(buf, binary.BigEndian, uint16(len(fields)))
 		for _, f := range fields { binary.Write(buf, binary.BigEndian, f) }
 		data := buf.Bytes(); if debug { hexDump(data) }; _, err := conn.Write(data)
-		if err != nil { fmt.Printf("[-] Error sending V9 Template: %v\n", err) } else { fmt.Println("[+] Sent V9 Template") }
-		lastTmpl = time.Now()
+		if err != nil {
+			fmt.Printf("[-] Error sending V9 Template: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Println("[+] Sent V9 Template")
+			lastTmpl = time.Now()
+		}
 	}
 	for {
+		if conn == nil {
+			conn, err = net.Dial("udp", addr)
+			if err != nil {
+				fmt.Printf("[-] Error connecting: %v\n", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			localIP = getLocalIP()
+			lastTmpl = time.Now().Add(-1 * time.Hour) // Force template resend on reconnect
+		}
 		if time.Since(lastTmpl) > 30*time.Second { sendV9Tmpl() }
+		if conn == nil { continue } // sendV9Tmpl might have failed and set conn to nil
+
 		buf := new(bytes.Buffer); uptime := uint32(time.Since(boot).Milliseconds())
 		binary.Write(buf, binary.BigEndian, NetFlowV9Header{Version: 9, Count: 1, SysUptime: uptime, UnixSecs: uint32(time.Now().Unix()), FlowSequence: seq, SourceID: cfg.SourceID})
 		seq++; binary.Write(buf, binary.BigEndian, uint16(257)); binary.Write(buf, binary.BigEndian, uint16(4+(cfg.Records*21)))
@@ -273,24 +303,37 @@ func runNetFlowV9(addr string, cfg Config, debug bool) {
 		}
 		for buf.Len()%4 != 0 { buf.WriteByte(0) }
 		data := buf.Bytes(); if debug { hexDump(data) }; _, err := conn.Write(data)
-		if err != nil { fmt.Printf("[-] Error sending V9: %v\n", err) } else { fmt.Printf("[+] Sent V9 (%d records)\n", cfg.Records) }
+		if err != nil {
+			fmt.Printf("[-] Error sending V9: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Printf("[+] Sent V9 (%d records)\n", cfg.Records)
+		}
 		time.Sleep(getNextDelay(cfg.Rate, cfg.RateModel, rng))
 	}
 }
 
 func runSyslog(addr string, cfg Config) {
-	conn, err := net.Dial("udp", addr)
-	if err != nil { fmt.Printf("[-] Error connecting: %v\n", err); return }
-	defer conn.Close(); rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	var conn net.Conn
+	var err error
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	var pcapPkts []PcapPacket; pcapIdx := 0
 	if cfg.PcapFile != "" {
-		var err error; pcapPkts, err = readPcap(cfg.PcapFile)
+		pcapPkts, err = readPcap(cfg.PcapFile)
 		if err != nil { fmt.Printf("[-] Error reading PCAP: %v\n", err); os.Exit(1) }
 		if len(pcapPkts) == 0 { fmt.Printf("[-] PCAP file contains no usable packets. Exiting.\n"); os.Exit(1) }
 		fmt.Printf("[+] Loaded %d packets from PCAP\n", len(pcapPkts))
 	}
 
 	for {
+		if conn == nil {
+			conn, err = net.Dial("udp", addr)
+			if err != nil {
+				fmt.Printf("[-] Error connecting: %v\n", err)
+				time.Sleep(time.Second)
+				continue
+			}
+		}
 		var event string; var sName string
 		if len(pcapPkts) > 0 {
 			p := pcapPkts[pcapIdx]; pcapIdx = (pcapIdx + 1) % len(pcapPkts)
@@ -301,37 +344,59 @@ func runSyslog(addr string, cfg Config) {
 		}
 		msg := fmt.Sprintf("<134>1 %s sensor-sandbox security-engine %d MSG-01 - %s\n", time.Now().Format(time.RFC3339Nano), os.Getpid(), event)
 		_, err := conn.Write([]byte(msg))
-		if err != nil { fmt.Printf("[-] Error sending Syslog: %v\n", err) } else { fmt.Printf("[+] Sent Syslog: %s\n", sName) }
+		if err != nil {
+			fmt.Printf("[-] Error sending Syslog: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Printf("[+] Sent Syslog: %s\n", sName)
+		}
 		time.Sleep(getNextDelay(cfg.Rate, cfg.RateModel, rng))
 	}
 }
 
 func runIPFIX(addr string, cfg Config, debug bool) {
-	conn, err := net.Dial("udp", addr)
-	if err != nil { fmt.Printf("[-] Error connecting: %v\n", err); return }
-	defer conn.Close()
+	var conn net.Conn
+	var err error
 	var seq uint32 = 0; rng := rand.New(rand.NewSource(time.Now().UnixNano())); lastTmpl := time.Now().Add(-1 * time.Hour)
 	fields := []NetFlowV9Field{{8, 4}, {12, 4}, {7, 2}, {11, 2}, {4, 1}, {1, 4}, {2, 4}}
 	var pcapPkts []PcapPacket; pcapIdx := 0; localIP := getLocalIP()
 	if cfg.PcapFile != "" {
-		var err error; pcapPkts, err = readPcap(cfg.PcapFile)
+		pcapPkts, err = readPcap(cfg.PcapFile)
 		if err != nil { fmt.Printf("[-] Error reading PCAP: %v\n", err); os.Exit(1) }
 		if len(pcapPkts) == 0 { fmt.Printf("[-] PCAP file contains no usable packets. Exiting.\n"); os.Exit(1) }
 		fmt.Printf("[+] Loaded %d packets from PCAP\n", len(pcapPkts))
 	}
 
 	sendIPFIXTmpl := func() {
+		if conn == nil { return }
 		buf := new(bytes.Buffer); buf.Write(make([]byte, 16))
 		binary.Write(buf, binary.BigEndian, uint16(2)); binary.Write(buf, binary.BigEndian, uint16(4+4+(len(fields)*4)))
 		binary.Write(buf, binary.BigEndian, uint16(258)); binary.Write(buf, binary.BigEndian, uint16(len(fields)))
 		for _, f := range fields { binary.Write(buf, binary.BigEndian, f) }
 		data := buf.Bytes(); binary.BigEndian.PutUint16(data[0:2], 10); binary.BigEndian.PutUint16(data[2:4], uint16(len(data))); binary.BigEndian.PutUint32(data[4:8], uint32(time.Now().Unix())); binary.BigEndian.PutUint32(data[8:12], seq); binary.BigEndian.PutUint32(data[12:16], cfg.SourceID)
 		seq++; if debug { hexDump(data) }; _, err := conn.Write(data)
-		if err != nil { fmt.Printf("[-] Error sending IPFIX Template: %v\n", err) } else { fmt.Println("[+] Sent IPFIX Template") }
-		lastTmpl = time.Now()
+		if err != nil {
+			fmt.Printf("[-] Error sending IPFIX Template: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Println("[+] Sent IPFIX Template")
+			lastTmpl = time.Now()
+		}
 	}
 	for {
+		if conn == nil {
+			conn, err = net.Dial("udp", addr)
+			if err != nil {
+				fmt.Printf("[-] Error connecting: %v\n", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			localIP = getLocalIP()
+			lastTmpl = time.Now().Add(-1 * time.Hour)
+		}
 		if time.Since(lastTmpl) > 30*time.Second { sendIPFIXTmpl() }
+		if conn == nil { continue }
+
 		buf := new(bytes.Buffer); buf.Write(make([]byte, 16))
 		binary.Write(buf, binary.BigEndian, uint16(258)); binary.Write(buf, binary.BigEndian, uint16(4+(cfg.Records*21)))
 		for i := 0; i < cfg.Records; i++ {
@@ -346,32 +411,46 @@ func runIPFIX(addr string, cfg Config, debug bool) {
 		}
 		data := buf.Bytes(); binary.BigEndian.PutUint16(data[0:2], 10); binary.BigEndian.PutUint16(data[2:4], uint16(len(data))); binary.BigEndian.PutUint32(data[4:8], uint32(time.Now().Unix())); binary.BigEndian.PutUint32(data[8:12], seq); binary.BigEndian.PutUint32(data[12:16], cfg.SourceID)
 		seq++; data2 := buf.Bytes(); if debug { hexDump(data2) }; _, err := conn.Write(data2)
-		if err != nil { fmt.Printf("[-] Error sending IPFIX: %v\n", err) } else { fmt.Printf("[+] Sent IPFIX (%d records)\n", cfg.Records) }
+		if err != nil {
+			fmt.Printf("[-] Error sending IPFIX: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Printf("[+] Sent IPFIX (%d records)\n", cfg.Records)
+		}
 		time.Sleep(getNextDelay(cfg.Rate, cfg.RateModel, rng))
 	}
 }
 
 func runSFlow(addr string, cfg Config, debug bool) {
-	conn, err := net.Dial("udp", addr)
-	if err != nil { fmt.Printf("[-] Error connecting: %v\n", err); return }
-	defer conn.Close()
+	var conn net.Conn
+	var err error
 	boot := time.Now().Add(-100 * time.Second); var dgSeq, sampleSeq uint32 = 0, 0; rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	if cfg.SamplingRate == 0 { cfg.SamplingRate = 100 }
 
-	// Determine local IP for Agent IP field
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	agentIP := localAddr.IP.To4()
-	if agentIP == nil { agentIP = net.ParseIP("0.0.0.0").To4() }
-
+	var agentIP []byte
 	var pcapPkts []PcapPacket; pcapIdx := 0; localIP := getLocalIP(); localMAC := getLocalMAC()
 	if cfg.PcapFile != "" {
-		var err error; pcapPkts, err = readPcap(cfg.PcapFile)
+		pcapPkts, err = readPcap(cfg.PcapFile)
 		if err != nil { fmt.Printf("[-] Error reading PCAP: %v\n", err); os.Exit(1) }
 		if len(pcapPkts) == 0 { fmt.Printf("[-] PCAP file contains no usable packets. Exiting.\n"); os.Exit(1) }
 		fmt.Printf("[+] Loaded %d packets from PCAP\n", len(pcapPkts))
 	}
 
 	for {
+		if conn == nil {
+			conn, err = net.Dial("udp", addr)
+			if err != nil {
+				fmt.Printf("[-] Error connecting: %v\n", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			// Determine local IP for Agent IP field
+			localAddr := conn.LocalAddr().(*net.UDPAddr)
+			agentIP = localAddr.IP.To4()
+			if agentIP == nil { agentIP = net.ParseIP("0.0.0.0").To4() }
+			localIP = getLocalIP(); localMAC = getLocalMAC()
+		}
+
 		buf := new(bytes.Buffer); uptime := uint32(time.Since(boot).Milliseconds())
 		binary.Write(buf, binary.BigEndian, uint32(5))     // sFlow Version
 		binary.Write(buf, binary.BigEndian, uint32(1))     // IP Version (IPv4)
@@ -439,13 +518,14 @@ func runSFlow(addr string, cfg Config, debug bool) {
 		}
 
 		data := buf.Bytes(); if debug { hexDump(data) }; _, err := conn.Write(data)
-		if err != nil { fmt.Printf("[-] Error sending sFlow: %v\n", err) } else { fmt.Printf("[+] Sent sFlow (%d samples)\n", cfg.Records) }
+		if err != nil {
+			fmt.Printf("[-] Error sending sFlow: %v\n", err)
+			conn.Close(); conn = nil
+		} else {
+			fmt.Printf("[+] Sent sFlow (%d samples)\n", cfg.Records)
+		}
 		time.Sleep(getNextDelay(cfg.Rate, cfg.RateModel, rng))
 	}
-}
-
-func sendPacket(conn net.Conn, buf *bytes.Buffer, debug bool) {
-	data := buf.Bytes(); if debug { hexDump(data) }; conn.Write(data)
 }
 
 func main() {
