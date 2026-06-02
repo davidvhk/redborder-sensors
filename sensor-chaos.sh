@@ -81,8 +81,16 @@ function cmd_down() {
 function cmd_up() {
     local name=$1
     local pid=$(check_sandbox "$name")
-    echo "[+] Bringing up network interface inside '$name'..."
+    local ip=$(get_ip "$name")
+    if [ -z "$ip" ]; then
+        echo "[-] Could not determine IP for sensor '$name'."
+        exit 1
+    fi
+    local gw=$(echo "$ip" | sed 's/\.[0-9]*$/\.1/')
+    echo "[+] Bringing up network interface inside '$name' and restoring config (IP: $ip, GW: $gw)..."
     /tmp/busybox nsenter -t "$pid" -n ip link set veth-ns up
+    /tmp/busybox nsenter -t "$pid" -n ip addr add "$ip/24" dev veth-ns 2>/dev/null || true
+    /tmp/busybox nsenter -t "$pid" -n ip route add default via "$gw" 2>/dev/null || true
 }
 
 function cmd_block() {
