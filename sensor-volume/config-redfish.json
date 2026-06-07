@@ -1,0 +1,17 @@
+{
+  "user": "redborder",
+  "password": "redborder",
+  "manufacturer": "HPE",
+  "model": "ProLiant DL360 Gen10",
+  "serial_number": "RBS-123456789",
+  "fail_rate": 0,
+  "health": {
+    "System": "OK",
+    "iLO": "OK",
+    "Temperatures": "OK",
+    "Fans": "OK",
+    "Storage": "OK",
+    "Bios": "OK",
+    "Power": "OK"
+  }
+}

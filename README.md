@@ -29,7 +29,10 @@ The underlying engine that sets up Mount, Network, and PID namespaces. It create
 High-performance mock agents written in Go:
 - **Telemetry Agent**: Generates NetFlow v5/v9, IPFIX, and Syslog alerts with advanced traffic models (Poisson, Bursty, Jitter).
 - **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat, and HTTPS alert delivery.
-- **SNMP/IPMI Agents**: Mock device agents for testing discovery and monitoring.
+- **SNMP/IPMI/Redfish Agents**: Mock device agents for testing discovery and monitoring.
+  - **Redfish Agent**: Supports iLO 5 compatibility, HTTPS, and failure simulation.
+    - **Failure Simulation**: Use `-fail-rate <0-100>` or `"fail_rate"` in JSON config to randomize "Critical" health status.
+    - **Health Locking**: Set specific component health (e.g., `"health": {"Power": "Critical"}`) in the configuration file.
 
 ## Getting Started
 
