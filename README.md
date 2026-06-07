@@ -21,6 +21,14 @@ The main CLI for managing sensors. It handles creation, destruction, logging, an
 - **List**: `sensor-ctl.sh list`
 - **Logs**: `sudo sensor-ctl.sh logs <name> [-f]`
 - **Shell**: `sudo sensor-ctl.sh shell <name>`
+- **Restore**: `sudo sensor-ctl.sh restore`
+
+### Reboot Persistence
+The system automatically saves the configuration of running sensors in `/var/lib/redborder-sensors`. To enable automatic recovery after reboot, a systemd service `redborder-sensors.service` is provided.
+```bash
+sudo cp redborder-sensors.service /etc/systemd/system/
+sudo systemctl enable redborder-sensors.service
+```
 
 ### Isolation Engine (`sensor-bbox.sh`)
 The underlying engine that sets up Mount, Network, and PID namespaces. It creates a sterile root filesystem using BusyBox and `pivot_root`, ensuring no interference with the host system.
