@@ -5,7 +5,18 @@
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 STATE_DIR="/tmp/redborder-sensors"
-mkdir -p "$STATE_DIR"
+PERSIST_DIR="/var/lib/redborder-sensors"
+BIN_DIR="$PERSIST_DIR/bin"
+mkdir -p "$STATE_DIR" "$PERSIST_DIR" "$BIN_DIR"
+
+BUSYBOX="$BIN_DIR/busybox"
+BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+
+if [ ! -f "$BUSYBOX" ]; then
+    echo "[+] Downloading static BusyBox binary to $BIN_DIR..."
+    wget -q "$BUSYBOX_URL" -O "$BUSYBOX"
+    chmod +x "$BUSYBOX"
+fi
 
 # Ensure the script is run as root for most commands
 if [ "$EUID" -ne 0 ] && [ "$1" != "list" ]; then
@@ -156,6 +167,7 @@ function stop_sandbox() {
     # Remove state files
     rm -f "$pid_file" "$STATE_DIR/$name.ip"
     [ -n "$id_file" ] && rm -f "$id_file"
+    rm -rf "$PERSIST_DIR/$name"
     
     echo "[+] Sandbox '$name' stopped and cleaned up."
 }
@@ -218,7 +230,8 @@ function start_sandbox() {
             exit 1
         else
             echo "[!] Found stale PID file for '$name'. Cleaning up..."
-            stop_sandbox "$name"
+            # Only cleanup volatile state, keep persistence
+            rm -f "$STATE_DIR/$name.pid" "$STATE_DIR/$name.ip"
         fi
     fi
 
@@ -284,6 +297,17 @@ function start_sandbox() {
     echo "$container_pid" > "$STATE_DIR/$name.pid"
     echo "$container_ip" > "$STATE_DIR/$name.ip"
     
+    # Save for persistence
+    local pdir="$PERSIST_DIR/$name"
+    mkdir -p "$pdir"
+    echo "$container_ip" > "$pdir/ip"
+    echo "$host_ip" > "$pdir/gw"
+    if [ ${#cmd[@]} -gt 0 ]; then
+        printf "%s\n" "${cmd[@]}" > "$pdir/start_cmd"
+    else
+        rm -f "$pdir/start_cmd"
+    fi
+
     # Setup Network
     local host_iface="veth-$name"
     local ns_iface="veth-ns"
@@ -311,9 +335,9 @@ function start_sandbox() {
     ip link set "$host_iface" up
     ip link set "$ns_iface" netns "$container_pid"
     
-    /tmp/busybox nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
-    /tmp/busybox nsenter -t "$container_pid" -n ip link set "$ns_iface" up
-    /tmp/busybox nsenter -t "$container_pid" -n ip route add default via "$host_ip"
+    "$BUSYBOX" nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
+    "$BUSYBOX" nsenter -t "$container_pid" -n ip link set "$ns_iface" up
+    "$BUSYBOX" nsenter -t "$container_pid" -n ip route add default via "$host_ip"
     
     # Setup NAT
     # Try to find physical interface
@@ -359,7 +383,7 @@ function enter_shell() {
     fi
     
     echo "[+] Entering sensor '$name'..."
-    /tmp/busybox nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" /bin/sh --login
+    "$BUSYBOX" nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" /bin/sh --login
 }
 
 function exec_command() {
@@ -392,11 +416,72 @@ function exec_command() {
     fi
     
     if [ "$detached" -eq 1 ]; then
+        local pdir="$PERSIST_DIR/$name/execs"
+        mkdir -p "$pdir"
+        
+        # Check if we are already restoring this command (avoid duplicates)
+        local is_duplicate=0
+        for f in "$pdir"/*; do
+            [ -e "$f" ] || continue
+            if diff <(printf "%s\n" "${cmd[@]}") "$f" &>/dev/null; then
+                is_duplicate=1
+                break
+            fi
+        done
+
+        if [ "$is_duplicate" -eq 0 ]; then
+            local exec_id=$(ls "$pdir" 2>/dev/null | wc -l)
+            printf "%s\n" "${cmd[@]}" > "$pdir/$exec_id"
+        fi
+
         echo "[+] Running command in background, logging to $STATE_DIR/$name.log"
-        /tmp/busybox nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" "${cmd[@]}" >> "$STATE_DIR/$name.log" 2>&1 &
+        "$BUSYBOX" nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" "${cmd[@]}" >> "$STATE_DIR/$name.log" 2>&1 &
     else
-        /tmp/busybox nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" "${cmd[@]}"
+        "$BUSYBOX" nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" "${cmd[@]}"
     fi
+}
+
+function restore_sandboxes() {
+    echo "[+] Restoring sensors from $PERSIST_DIR..."
+    for d in "$PERSIST_DIR"/*/; do
+        [ -d "$d" ] || continue
+        name=$(basename "$d")
+        [ "$name" == "bin" ] && continue
+        
+        if [ -f "$STATE_DIR/$name.pid" ]; then
+            pid=$(cat "$STATE_DIR/$name.pid")
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "[!] Sensor '$name' is already running (PID $pid). Skipping..."
+                continue
+            fi
+        fi
+
+        echo "[+] Restoring sensor '$name'..."
+        
+        local ip=$(cat "$d/ip" 2>/dev/null)
+        local gw=$(cat "$d/gw" 2>/dev/null)
+        
+        local start_args=("$name")
+        [ -n "$ip" ] && start_args+=("--ip" "$ip")
+        [ -n "$gw" ] && start_args+=("--gw" "$gw")
+
+        if [ -f "$d/start_cmd" ]; then
+            mapfile -t cmd < "$d/start_cmd"
+            start_sandbox "${start_args[@]}" "${cmd[@]}"
+        else
+            start_sandbox "${start_args[@]}"
+        fi
+        
+        if [ -d "$d/execs" ]; then
+            # Use a sorted list of exec IDs to maintain order
+            for f in $(ls "$d/execs/" | sort -n); do
+                [ -f "$d/execs/$f" ] || continue
+                mapfile -t exec_cmd < "$d/execs/$f"
+                echo "[+]   Re-running detached command: ${exec_cmd[*]}"
+                exec_command "$name" -d "${exec_cmd[@]}"
+            done
+        fi
+    done
 }
 
 case "$1" in
@@ -407,6 +492,9 @@ case "$1" in
     stop)
         shift
         stop_sandbox "$@"
+        ;;
+    restore)
+        restore_sandboxes
         ;;
     list)
         list_sandboxes
@@ -427,11 +515,12 @@ case "$1" in
         enter_shell "$@"
         ;;
     *)
-        echo "Usage: $0 {start|stop|list|stats|logs|exec|shell} [name]"
+        echo "Usage: $0 {start|stop|list|stats|logs|exec|shell|restore} [name]"
         echo ""
         echo "Commands:"
         echo "  start <name> [--ip <ip>] [--gw <gw>] [command]   Start a new sensor"
         echo "  stop <name>                                      Stop a running sensor"
+        echo "  restore                                          Restore all sensors from persistent config"
         echo "  list                                             List all sensors"
         echo "  stats                                            Show real-time resource usage"
         echo "  logs <name> [-f]                                 Show sensor logs (-f to follow)"

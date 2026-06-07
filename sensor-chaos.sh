@@ -19,6 +19,9 @@ for tool in tc iptables ip; do
     fi
 done
 
+BIN_DIR="/var/lib/redborder-sensors/bin"
+BUSYBOX="$BIN_DIR/busybox"
+
 function get_pid() {
     local name=$1
     if [ -f "$STATE_DIR/$name.pid" ]; then
@@ -75,7 +78,7 @@ function cmd_down() {
     local name=$1
     local pid=$(check_sandbox "$name")
     echo "[+] Bringing down network interface inside '$name'..."
-    /tmp/busybox nsenter -t "$pid" -n ip link set veth-ns down
+    "$BUSYBOX" nsenter -t "$pid" -n ip link set veth-ns down
 }
 
 function cmd_up() {
@@ -88,9 +91,9 @@ function cmd_up() {
     fi
     local gw=$(echo "$ip" | sed 's/\.[0-9]*$/\.1/')
     echo "[+] Bringing up network interface inside '$name' and restoring config (IP: $ip, GW: $gw)..."
-    /tmp/busybox nsenter -t "$pid" -n ip link set veth-ns up
-    /tmp/busybox nsenter -t "$pid" -n ip addr add "$ip/24" dev veth-ns 2>/dev/null || true
-    /tmp/busybox nsenter -t "$pid" -n ip route add default via "$gw" 2>/dev/null || true
+    "$BUSYBOX" nsenter -t "$pid" -n ip link set veth-ns up
+    "$BUSYBOX" nsenter -t "$pid" -n ip addr add "$ip/24" dev veth-ns 2>/dev/null || true
+    "$BUSYBOX" nsenter -t "$pid" -n ip route add default via "$gw" 2>/dev/null || true
 }
 
 function cmd_block() {
@@ -140,7 +143,7 @@ function cmd_clear() {
     # Also ensure interface is up
     local pid=$(get_pid "$name")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        /tmp/busybox nsenter -t "$pid" -n ip link set veth-ns up 2>/dev/null
+        "$BUSYBOX" nsenter -t "$pid" -n ip link set veth-ns up 2>/dev/null
     fi
 }
 
@@ -159,7 +162,7 @@ function cmd_status() {
     echo "Status: RUNNING (PID $pid, IP $ip)"
     
     echo -n "Interface: "
-    /tmp/busybox nsenter -t "$pid" -n ip link show veth-ns | grep -q "UP" && echo "UP" || echo "DOWN"
+    "$BUSYBOX" nsenter -t "$pid" -n ip link show veth-ns | grep -q "UP" && echo "UP" || echo "DOWN"
     
     echo "Network Impairments (tc):"
     tc qdisc show dev "$dev" | grep -v "noqueue" || echo "  None"

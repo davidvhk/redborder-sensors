@@ -29,26 +29,29 @@ CONTAINER_DIR="/tmp/redborder-sensor-$NAME"
 HOST_SHARED_DIR="${HOST_SHARED_DIR:-$SCRIPT_DIR/sensor-volume}" 
 DNS="1.1.1.1"
 BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+BIN_DIR="/var/lib/redborder-sensors/bin"
+mkdir -p "$BIN_DIR"
+BUSYBOX="$BIN_DIR/busybox"
 
 # 1. Ensure the script is run as root
 if [ "$EUID" -ne 0 ]; then
-	    echo "[-] This script requires root privileges. Please run with sudo."
-	        exit 1
+    echo "[-] This script requires root privileges. Please run with sudo."
+    exit 1
 fi
 
 # FIX: Create the host shared directory BEFORE unsharing namespaces
 if [ ! -d "$HOST_SHARED_DIR" ]; then
-	    echo "[+] Creating shared directory on host: $HOST_SHARED_DIR"
-	        mkdir -p "$HOST_SHARED_DIR"
-		    # Ensure regular users can read/write to it easily
-		        chmod 777 "$HOST_SHARED_DIR"
+    echo "[+] Creating shared directory on host: $HOST_SHARED_DIR"
+    mkdir -p "$HOST_SHARED_DIR"
+    # Ensure regular users can read/write to it easily
+    chmod 777 "$HOST_SHARED_DIR"
 fi
 
 # 2. Stage the BusyBox binary on the host if not already present
-if [ ! -f /tmp/busybox ]; then
-	    echo "[+] Downloading static BusyBox binary..."
-	        wget -q "$BUSYBOX_URL" -O /tmp/busybox
-		    chmod +x /tmp/busybox
+if [ ! -f "$BUSYBOX" ]; then
+    echo "[+] Downloading static BusyBox binary..."
+    wget -q "$BUSYBOX_URL" -O "$BUSYBOX"
+    chmod +x "$BUSYBOX"
 fi
 
 # 3. Handle the namespace unsharing and pivot setup
@@ -67,7 +70,7 @@ mount -t tmpfs none "$CONTAINER_DIR"
 mkdir -p "$CONTAINER_DIR"/{bin,sbin,proc,sys,dev,root,old_root,sensor-data}
 
 # Copy the staged busybox into the container root
-cp /tmp/busybox "$CONTAINER_DIR/bin/busybox"
+cp "$BUSYBOX" "$CONTAINER_DIR/bin/busybox"
 
 echo "[+] Populating container with relative BusyBox symlinks..."
 cd "$CONTAINER_DIR/bin"

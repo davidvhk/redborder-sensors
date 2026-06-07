@@ -1,0 +1,11 @@
+[Unit]
+Description=Redborder Sensor Sandboxes
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sensor-ctl restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
