@@ -1,0 +1,37 @@
+{
+  "port": 8080,
+  "verbose": true,
+  "endpoints": [
+    {
+      "path": "/",
+      "methods": ["GET"],
+      "status": 200,
+      "body": "Welcome to the header validation test server!\n",
+      "headers": {
+        "Content-Type": "text/plain"
+      }
+    },
+    {
+      "path": "/secure-api",
+      "methods": ["POST", "GET"],
+      "expected_headers": {
+        "X-Custom-Header": "SecretValue",
+        "Content-Type": "application/json"
+      },
+      "status": 201,
+      "body": "{\"status\": \"success\", \"message\": \"Headers validated successfully\"}\n",
+      "headers": {
+        "Content-Type": "application/json"
+      }
+    },
+    {
+      "path": "/require-user",
+      "methods": ["GET"],
+      "expected_headers": {
+        "X-Ops-UserId": ""
+      },
+      "status": 200,
+      "body": "User ID header was present!\n"
+    }
+  ]
+}
