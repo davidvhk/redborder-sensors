@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+const Version = "1.1.0"
+
 // AuthConfig defines Basic Auth credentials
 type AuthConfig struct {
 	User string `json:"user"`
@@ -58,6 +60,8 @@ func main() {
 		config.Verbose = true
 	}
 	globalVerbose = config.Verbose
+
+	fmt.Printf("[+] Redborder Mock Server %s starting...\n", Version)
 
 	for _, ep := range config.Endpoints {
 		epCopy := ep // Capture loop variable
