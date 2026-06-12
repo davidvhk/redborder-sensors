@@ -19,7 +19,7 @@ if [ ! -f "$BUSYBOX" ]; then
 fi
 
 # Ensure the script is run as root for most commands
-if [ "$EUID" -ne 0 ] && [ "$1" != "list" ]; then
+if [ "$EUID" -ne 0 ] && [ "$1" != "list" ] && [ "$1" != "__complete" ]; then
     echo "[-] This script requires root privileges. Please run with sudo."
     exit 1
 fi
@@ -262,13 +262,43 @@ function start_sandbox() {
 
     echo "[+] Starting sensor '$name' (IP: $container_ip, GW: $host_ip)..."
 
-    # If no command provided, use a keep-alive loop
-    if [ ${#cmd[@]} -eq 0 ]; then
-        cmd=("/bin/sh" "-c" "while true; do sleep 1d; done")
-    elif [[ "${cmd[0]}" == -* ]]; then
-        echo "[!] Warning: First command argument '${cmd[0]}' starts with '-'. Did you forget the command path?"
-        echo "    Usage: $0 start <name> [--ip <ip>] [--gw <gw>] <command> [args...]"
+    # Shorthand resolution
+    if [ ${#cmd[@]} -eq 1 ]; then
+        case "${cmd[0]}" in
+            ips)
+                cmd=("/sensor-data/ips-agent" "-config" "/sensor-data/config-ips.json")
+                ;;
+            snmp)
+                cmd=("/sensor-data/snmp-agent" "-config" "/sensor-data/config-snmp.json")
+                ;;
+            ipmi)
+                cmd=("/sensor-data/ipmi-agent" "-config" "/sensor-data/config-ipmi.json")
+                ;;
+            redfish)
+                cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json")
+                ;;
+            proxy)
+                cmd=("/sensor-data/proxy-agent" "-config" "/sensor-data/config-proxy-anon.json")
+                ;;
+            telemetry)
+                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json")
+                ;;
+            sflow)
+                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json")
+                ;;
+            server)
+                cmd=("/sensor-data/server" "-config" "/sensor-data/config-server.json")
+                ;;
+        esac
     fi
+
+    # Smart path resolution for all arguments
+    for i in "${!cmd[@]}"; do
+        # If it's not an absolute path, try to find it in /sensor-data
+        if [[ "${cmd[$i]}" != /* ]] && [ -f "$SCRIPT_DIR/sensor-volume/${cmd[$i]}" ]; then
+            cmd[$i]="/sensor-data/${cmd[$i]}"
+        fi
+    done
 
     # Launch in background
     "$SCRIPT_DIR/sensor-bbox.sh" "--name=$name" "${cmd[@]}" > "$STATE_DIR/$name.log" 2>&1 &
@@ -513,6 +543,23 @@ case "$1" in
     shell)
         shift
         enter_shell "$@"
+        ;;
+    __complete)
+        # Hidden command for bash completion
+        case "$2" in
+            commands)
+                echo "start stop list stats logs exec shell restore"
+                ;;
+            types)
+                echo "ips snmp ipmi redfish proxy telemetry sflow server"
+                ;;
+            running)
+                for f in "$STATE_DIR"/*.pid; do
+                    [ -e "$f" ] || continue
+                    basename "$f" .pid
+                done
+                ;;
+        esac
         ;;
     *)
         echo "Usage: $0 {start|stop|list|stats|logs|exec|shell|restore} [name]"
