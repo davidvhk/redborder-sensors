@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"strings"
 )
 
-const Version = "1.1.0"
+const Version = "1.1.1"
 
 // AuthConfig defines Basic Auth credentials
 type AuthConfig struct {
@@ -24,6 +25,7 @@ type EndpointConfig struct {
 	Methods         []string          `json:"methods"`
 	Status          int               `json:"status"`
 	Body            string            `json:"body"`
+	ExpectedBody    string            `json:"expected_body"`    // Body required in request
 	Headers         map[string]string `json:"headers"`          // Headers to set in response
 	ExpectedHeaders map[string]string `json:"expected_headers"` // Headers required in request
 	Auth            *AuthConfig       `json:"auth"`
@@ -159,6 +161,28 @@ func handleEndpoint(w http.ResponseWriter, r *http.Request, ep EndpointConfig) {
 			http.Error(w, fmt.Sprintf("Invalid Header Value: %s", k), http.StatusBadRequest)
 			return
 		}
+	}
+
+	// Check Expected Body
+	if ep.ExpectedBody != "" {
+		bodyBytes, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			if globalVerbose {
+				fmt.Printf("[!] Failed to read body from %s: %v\n", r.RemoteAddr, err)
+			}
+			http.Error(w, "Failed to read body", http.StatusInternalServerError)
+			return
+		}
+		gotBody := string(bodyBytes)
+		if gotBody != ep.ExpectedBody {
+			if globalVerbose {
+				fmt.Printf("[!] Body mismatch for %s: expected '%s', got '%s'\n", r.URL.Path, ep.ExpectedBody, gotBody)
+			}
+			http.Error(w, "Invalid Body", http.StatusBadRequest)
+			return
+		}
+		// Restore body for any potential subsequent use
+		r.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
 	}
 
 	// Set custom headers
