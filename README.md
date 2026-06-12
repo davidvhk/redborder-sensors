@@ -36,15 +36,30 @@ The underlying engine that sets up Mount, Network, and PID namespaces. It create
 ### Mock Agents (`programs/go/`)
 High-performance mock agents written in Go:
 - **Telemetry Agent**: Generates NetFlow v5/v9, IPFIX, and Syslog alerts with advanced traffic models (Poisson, Bursty, Jitter).
-- **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat, and HTTPS alert delivery.
-- **SNMP/IPMI/Redfish Agents**: Mock device agents for testing discovery and monitoring.
-  - **Redfish Agent**: Supports iLO 5 compatibility, HTTPS, and failure simulation.
-    - **Failure Simulation**: Use `-fail-rate <0-100>` or `"fail_rate"` in JSON config to randomize "Critical" health status.
-    - **Health Locking**: Set specific component health (e.g., `"health": {"Power": "Critical"}`) in the configuration file.
-- **Test Server**: A flexible HTTP/HTTPS server for simulating various backend behaviors.
-  - **Features**: Configurable paths, methods, status codes, and bodies via JSON. Supports basic auth, redirects, and SSL/TLS.
-  - **Usage**: See `sensor-volume/config-server.json` for a configuration example.
-  - **SSL**: To test HTTPS, generate a certificate: `openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 -nodes -subj "/CN=localhost"`.
+- **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat (Chef Protocol), and HTTPS alert delivery.
+- **SNMP Agent**: Mock SNMPv2c/v3 agent mimicking network devices.
+- **IPMI Agent**: Mock IPMI over LAN server supporting sensor readings (Temp, Fan).
+- **Redfish Agent**: Supports iLO 5 compatibility, HTTPS, and failure simulation.
+  - **Failure Simulation**: Use `-fail-rate <0-100>` or `"fail_rate"` in JSON config to randomize "Critical" health status.
+  - **Health Locking**: Set specific component health (e.g., `"health": {"Power": "Critical"}`) in the configuration file.
+
+### Mock Server (`programs/go/server.go`)
+A flexible HTTP/HTTPS server for simulating various backend behaviors and validating client requests.
+
+**Features:**
+- **Dynamic Routing**: Configurable paths and methods via JSON.
+- **Request Validation**:
+  - **Basic Auth**: Optional per-endpoint authentication.
+  - **Header Check**: Validate that specific headers exist or match expected values.
+  - **Body Check**: Ensure the request body matches an exact string.
+- **Custom Responses**: Define status codes, response bodies, and custom headers.
+- **HTTPS/SSL**: Built-in support for secure connections.
+- **Redirects**: Easily simulate 301/302 redirects.
+
+**Usage:**
+```bash
+sudo ./sensor-ctl.sh start srv /sensor-data/server -config /sensor-data/config-server.json
+```
 
 ## Getting Started
 
@@ -60,9 +75,9 @@ Launch an IPS sensor with a specific name and configuration.
 sudo sensor-ctl.sh start ips1 /sensor-data/ips-agent -config /sensor-data/config-ips.json
 ```
 
-Launch a telemetry agent to generate NetFlow v5 traffic.
+Launch a telemetry agent with custom networking.
 ```bash
-sudo sensor-ctl.sh start s1 /sensor-data/telemetry-agent -target 10.0.0.1 -rate 20 -model poisson
+sudo sensor-ctl.sh start s1 --ip 192.168.100.10 --gw 192.168.100.1 /sensor-data/telemetry-agent -target 10.0.0.1 -rate 20
 ```
 
 Run an additional command inside an already active sandbox.
@@ -71,11 +86,19 @@ sudo sensor-ctl.sh exec s1 ping -c 3 8.8.8.8
 sudo sensor-ctl.sh exec -d s1 /sensor-data/snmp-agent -config /sensor-data/config-snmp.json
 ```
 
-### 3. redborder sensor monitor
-View real-time resource usage across all active sensors.
-```bash
-sudo sensor-ctl.sh stats
-```
+### 3. Advanced CLI Usage
+- **Persistence**: Use `sudo ./sensor-ctl.sh restore` to recover all sensors after a reboot.
+- **Stats**: View real-time resource usage with `sudo ./sensor-ctl.sh stats`.
+- **Logs**: Follow logs with `sudo ./sensor-ctl.sh logs <name> -f`.
+
+## Chaos Engineering
+The `sensor-chaos.sh` tool allows you to inject network and process failures:
+- **Packet Loss**: `sudo ./sensor-chaos.sh loss s1 25%`
+- **Latency**: `sudo ./sensor-chaos.sh delay s1 150ms`
+- **Interface Down**: `sudo ./sensor-chaos.sh down s1`
+- **Port Blocking**: `sudo ./sensor-chaos.sh block s1 161 udp`
+- **Process Kill**: `sudo ./sensor-chaos.sh kill s1`
+- **Status/Clear**: Use `status` to view impairments and `clear` to remove them.
 
 ## Packaging (RPM)
 
@@ -100,13 +123,6 @@ The framework uses a **Bridge-per-Subnet** model:
 
 ### Multi-Instance Isolation
 Each sensor instance has its own identity. The framework exports the `SENSOR_NAME` environment variable, allowing agents to isolate their state files (e.g., `ips-state-ips1.json`) within the shared volume.
-
-### Chaos Engineering
-Use `sensor-chaos.sh` to inject network impairments directly into a snesors interface:
-```bash
-sudo sensor-chaos.sh loss ips1 10%
-sudo sensor-chaos.sh delay ips1 100ms
-```
 
 ## Requirements
 - Linux kernel with Namespace support (`CONFIG_NAMESPACES`).
