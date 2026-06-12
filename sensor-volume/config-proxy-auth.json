@@ -1,0 +1,8 @@
+{
+  "port": 8081,
+  "verbose": true,
+  "auth": {
+    "user": "redborder",
+    "pass": "redborder"
+  }
+}
