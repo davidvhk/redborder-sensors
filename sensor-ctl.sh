@@ -179,7 +179,8 @@ function start_sandbox() {
     local custom_gw=""
 
     if [ -z "$name" ]; then
-        echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [command...]"
+        echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [command|type]"
+        echo "Example: $0 start ips1 ips"
         exit 1
     fi
 
@@ -565,14 +566,16 @@ case "$1" in
         echo "Usage: $0 {start|stop|list|stats|logs|exec|shell|restore} [name]"
         echo ""
         echo "Commands:"
-        echo "  start <name> [--ip <ip>] [--gw <gw>] [command]   Start a new sensor"
-        echo "  stop <name>                                      Stop a running sensor"
-        echo "  restore                                          Restore all sensors from persistent config"
-        echo "  list                                             List all sensors"
-        echo "  stats                                            Show real-time resource usage"
-        echo "  logs <name> [-f]                                 Show sensor logs (-f to follow)"
-        echo "  exec <name> [-d] <command>                       Run a command in a running sensor (-d for background)"
-        echo "  shell <name>                                     Enter sensor shell"
+        echo "  start <name> [--ip <ip>] [--gw <gw>] [command|type]  Start a new sensor"
+        echo "    Types: ips, snmp, ipmi, redfish, proxy, telemetry, sflow, server"
+        echo "    Note: Filenames in sensor-volume/ are automatically resolved to /sensor-data/"
+        echo "  stop <name>                                          Stop a running sensor"
+        echo "  restore                                              Restore all sensors from persistent config"
+        echo "  list                                                 List all sensors"
+        echo "  stats                                                Show real-time resource usage"
+        echo "  logs <name> [-f]                                     Show sensor logs (-f to follow)"
+        echo "  exec <name> [-d] <command>                           Run a command in a running sensor (-d for background)"
+        echo "  shell <name>                                         Enter sensor shell"
         exit 1
         ;;
 esac

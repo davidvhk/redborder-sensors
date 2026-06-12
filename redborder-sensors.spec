@@ -1,7 +1,7 @@
 %define debug_package %{nil}
 
 Name:           redborder-sensors
-Version:        0.0.8
+Version:        0.0.9
 Release:        1%{?dist}
 Summary:        Lightweight sensor sandbox for redborder
 
@@ -66,6 +66,8 @@ ln -s %{_libexecdir}/%{name}/sensor-chaos.sh %{buildroot}%{_bindir}/sensor-chaos
 %{_sysconfdir}/bash_completion.d/sensor-ctl
 
 %changelog
+* Fri Jun 12 2026 David Vanhoucke <dvanhoucke@redborder.com> - 0.0.9-1
+- Update CLI help messages to reflect shorthands and smart paths
 * Fri Jun 12 2026 David Vanhoucke <dvanhoucke@redborder.com> - 0.0.8-1
 - Improve smart path resolution for all command arguments
 - Add sflow shorthand command
