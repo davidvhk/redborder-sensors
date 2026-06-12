@@ -37,6 +37,7 @@ The underlying engine that sets up Mount, Network, and PID namespaces. It create
 High-performance mock agents written in Go:
 - **Telemetry Agent**: Generates NetFlow v5/v9, IPFIX, and Syslog alerts with advanced traffic models (Poisson, Bursty, Jitter).
 - **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat (Chef Protocol), and HTTPS alert delivery.
+- **Proxy Agent**: HTTP/HTTPS proxy supporting anonymous and authenticated (Basic Auth) modes. Useful for testing proxy-aware clients and traffic redirection.
 - **SNMP Agent**: Mock SNMPv2c/v3 agent mimicking network devices.
 - **IPMI Agent**: Mock IPMI over LAN server supporting sensor readings (Temp, Fan).
 - **Redfish Agent**: Supports iLO 5 compatibility, HTTPS, and failure simulation.
@@ -78,6 +79,11 @@ sudo sensor-ctl.sh start ips1 /sensor-data/ips-agent -config /sensor-data/config
 Launch a telemetry agent with custom networking.
 ```bash
 sudo sensor-ctl.sh start s1 --ip 192.168.100.10 --gw 192.168.100.1 /sensor-data/telemetry-agent -target 10.0.0.1 -rate 20
+```
+
+Launch a web proxy (authenticated).
+```bash
+sudo sensor-ctl.sh start proxy1 /sensor-data/proxy-agent -config /sensor-data/config-proxy-auth.json
 ```
 
 Run an additional command inside an already active sandbox.
