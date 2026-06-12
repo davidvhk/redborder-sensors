@@ -41,6 +41,10 @@ High-performance mock agents written in Go:
   - **Redfish Agent**: Supports iLO 5 compatibility, HTTPS, and failure simulation.
     - **Failure Simulation**: Use `-fail-rate <0-100>` or `"fail_rate"` in JSON config to randomize "Critical" health status.
     - **Health Locking**: Set specific component health (e.g., `"health": {"Power": "Critical"}`) in the configuration file.
+- **Test Server**: A flexible HTTP/HTTPS server for simulating various backend behaviors.
+  - **Features**: Configurable paths, methods, status codes, and bodies via JSON. Supports basic auth, redirects, and SSL/TLS.
+  - **Usage**: See `sensor-volume/config-server.json` for a configuration example.
+  - **SSL**: To test HTTPS, generate a certificate: `openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 -nodes -subj "/CN=localhost"`.
 
 ## Getting Started
 

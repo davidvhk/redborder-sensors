@@ -1,0 +1,35 @@
+{
+  "port": 80,
+  "ssl": {
+    "enabled": false,
+    "cert_file": "/sensor-data/server.crt",
+    "key_file": "/sensor-data/server.key"
+  },
+  "endpoints": [
+    {
+      "path": "/",
+      "methods": ["GET"],
+      "status": 200,
+      "body": "Hello David! You are hitting a native Go binary running inside an isolated container namespace.\n",
+      "headers": {
+        "Content-Type": "text/plain"
+      }
+    },
+    {
+      "path": "/auth",
+      "status": 200,
+      "body": "Authenticated successfully!\n",
+      "auth": {
+        "user": "admin",
+        "pass": "secret"
+      }
+    },
+    {
+      "path": "/redirect",
+      "status": 302,
+      "headers": {
+        "Location": "/"
+      }
+    }
+  ]
+}
