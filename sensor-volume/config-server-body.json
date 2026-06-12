@@ -1,0 +1,19 @@
+{
+  "port": 8080,
+  "verbose": true,
+  "endpoints": [
+    {
+      "path": "/validate-body",
+      "methods": ["POST"],
+      "expected_body": "Hello Redborder",
+      "status": 200,
+      "body": "Body validated successfully!\n"
+    },
+    {
+      "path": "/no-body-check",
+      "methods": ["POST", "GET"],
+      "status": 200,
+      "body": "No body check here.\n"
+    }
+  ]
+}
