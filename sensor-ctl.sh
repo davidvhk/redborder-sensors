@@ -290,6 +290,9 @@ function start_sandbox() {
             webserver)
                 cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json")
                 ;;
+            proxy)
+                cmd=("/sensor-data/proxy-agent" "-config" "/sensor-data/config-proxy.json")
+                ;;
         esac
     fi
 

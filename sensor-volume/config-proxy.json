@@ -1,0 +1,8 @@
+{
+  "manager_url": "https://192.168.1.25/api/v1/sensors",
+  "api_access_key": "ki9ARWjwwzspJGmyMFJ57rbszY5s8bDssD_Srw5F",
+  "domain": "redborder.cluster",
+  "insecure": true,
+  "port": 3128,
+  "type": 31
+}
