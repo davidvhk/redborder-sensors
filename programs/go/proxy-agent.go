@@ -403,6 +403,11 @@ func main() {
 	if sensorName == "" { sensorName = os.Getenv("SENSOR_NAME") }
 	fmt.Printf("[+] Proxy Agent active. UUID: %s. Nodename: %s\n", state.UUID, sensorName)
 
+	// Initial heartbeat immediately after claiming
+	if err := checkIn(cfg, state); err != nil && cfg.Verbose {
+		fmt.Printf("[-] Initial heartbeat error: %v\n", err)
+	}
+
 	heartbeatTicker := time.NewTicker(time.Duration(cfg.Rate) * time.Minute)
 	for {
 		select {
