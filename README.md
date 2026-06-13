@@ -50,7 +50,7 @@ High-performance mock agents written in Go:
   - **Failure Simulation**: Use `-fail-rate <0-100>` or `"fail_rate"` in JSON config to randomize "Critical" health status.
   - **Health Locking**: Set specific component health (e.g., `"health": {"Power": "Critical"}`) in the configuration file.
 
-### Mock Server (`programs/go/server.go`)
+### Mock Webserver (`programs/go/webserver.go`)
 A flexible HTTP/HTTPS server for simulating various backend behaviors and validating client requests.
 
 **Features:**
@@ -65,7 +65,7 @@ A flexible HTTP/HTTPS server for simulating various backend behaviors and valida
 
 **Usage:**
 ```bash
-sudo ./sensor-ctl.sh start srv /sensor-data/server -config /sensor-data/config-server.json
+sudo ./sensor-ctl.sh start srv /sensor-data/server -config /sensor-data/config-webserver.json
 ```
 
 ## Getting Started
@@ -89,7 +89,7 @@ sudo ./sensor-ctl.sh start s1 --ip 192.168.100.10 --gw 192.168.100.1 telemetry
 
 Launch a web proxy (authenticated).
 ```bash
-sudo ./sensor-ctl.sh start proxy1 proxy-agent -config config-proxy-auth.json
+sudo ./sensor-ctl.sh start proxy1 webproxy-agent -config config-webproxy-auth.json
 ```
 
 Run an additional command inside an already active sandbox.

@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Proxy agent version
+// Web Proxy agent version
 const Version = "1.0.0"
 
 type AuthConfig struct {
@@ -61,7 +61,7 @@ func main() {
 		currentConfig.Verbose = true
 	}
 
-	fmt.Printf("[+] Redborder Proxy Agent %s starting...\n", Version)
+	fmt.Printf("[+] Redborder Web Proxy Agent %s starting...\n", Version)
 	if currentConfig.Auth != nil {
 		fmt.Printf("[+] Authentication enabled (User: %s)\n", currentConfig.Auth.User)
 	}
@@ -75,7 +75,7 @@ func main() {
 
 	fmt.Printf("[+] Listening on %s\n", server.Addr)
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("[-] Proxy Server failed: %v", err)
+		log.Fatalf("[-] Web Proxy Server failed: %v", err)
 	}
 }
 

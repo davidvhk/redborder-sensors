@@ -63,7 +63,7 @@ func main() {
 	}
 	globalVerbose = config.Verbose
 
-	fmt.Printf("[+] Redborder Mock Server %s starting...\n", Version)
+	fmt.Printf("[+] Redborder Mock Webserver %s starting...\n", Version)
 
 	for _, ep := range config.Endpoints {
 		epCopy := ep // Capture loop variable
