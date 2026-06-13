@@ -16,12 +16,18 @@ The framework allows developers and QA engineers to:
 
 ### Management Tool (`sensor-ctl.sh`)
 The main CLI for managing sensors. It handles creation, destruction, logging, and command execution.
-- **Start**: `sudo sensor-ctl.sh start <name> [command]`
+- **Start**: `sudo sensor-ctl.sh start <name> [command|type]`
 - **Stop**: `sudo sensor-ctl.sh stop <name>`
 - **List**: `sensor-ctl.sh list`
 - **Logs**: `sudo sensor-ctl.sh logs <name> [-f]`
 - **Shell**: `sudo sensor-ctl.sh shell <name>`
 - **Restore**: `sudo sensor-ctl.sh restore`
+
+### Shell Autocomplete
+A bash completion script is provided to make the CLI easier to use. It suggests commands, running sensor names, and agent types.
+```bash
+source sensor-ctl-completion.bash
+```
 
 ### Reboot Persistence
 The system automatically saves the configuration of running sensors in `/var/lib/redborder-sensors`. To enable automatic recovery after reboot, a systemd service `redborder-sensors.service` is provided.
@@ -71,19 +77,19 @@ make
 ```
 
 ### 2. Start a redborder sensor
-Launch an IPS sensor with a specific name and configuration.
+Launch an IPS sensor with a specific name using shorthand.
 ```bash
-sudo sensor-ctl.sh start ips1 /sensor-data/ips-agent -config /sensor-data/config-ips.json
+sudo ./sensor-ctl.sh start ips1 ips
 ```
 
 Launch a telemetry agent with custom networking.
 ```bash
-sudo sensor-ctl.sh start s1 --ip 192.168.100.10 --gw 192.168.100.1 /sensor-data/telemetry-agent -target 10.0.0.1 -rate 20
+sudo ./sensor-ctl.sh start s1 --ip 192.168.100.10 --gw 192.168.100.1 telemetry
 ```
 
 Launch a web proxy (authenticated).
 ```bash
-sudo sensor-ctl.sh start proxy1 /sensor-data/proxy-agent -config /sensor-data/config-proxy-auth.json
+sudo ./sensor-ctl.sh start proxy1 proxy-agent -config config-proxy-auth.json
 ```
 
 Run an additional command inside an already active sandbox.
