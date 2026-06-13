@@ -11,11 +11,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,7 +25,7 @@ import (
 	"time"
 )
 
-const VERSION = "v1.5 (2026-06-13)"
+const VERSION = "v1.11 (2026-06-13)"
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -38,7 +40,6 @@ type State struct {
 type Config struct {
 	ManagerURL   string `json:"manager_url"`
 	APIAccessKey string `json:"api_access_key"`
-	AlertURL     string `json:"alert_url"`
 	Port         int    `json:"port"`
 	Rate         int    `json:"rate"`
 	Insecure     bool   `json:"insecure"`
@@ -47,374 +48,210 @@ type Config struct {
 	SensorType   int    `json:"type"`
 }
 
+// NetFlow v5 structures
+type NetFlowV5Header struct {
+	Version uint16; Count uint16; SysUptime uint32; UnixSecs uint32; UnixNanos uint32; FlowSequence uint32; EngineType uint8; EngineID uint8; SamplingInterval uint16
+}
+
+type NetFlowV5Record struct {
+	SrcAddr [4]byte; DstAddr [4]byte; NextHop [4]byte; Input uint16; Output uint16; DPkts uint32; DOctets uint32; First uint32; Last uint32; SrcPort uint16; DstPort uint16; Pad1 uint8; TCPFlags uint8; Prot uint8; Tos uint8; SrcAs uint16; DstAs uint16; SrcMask uint8; DstMask uint8; Pad2 uint16
+}
+
+// Standard Redborder Flow JSON
+type RedborderFlow struct {
+	Timestamp      int64  `json:"timestamp"`
+	SensorUUID     string `json:"sensor_uuid"`
+	SensorName     string `json:"sensor_name"`
+	SensorType     string `json:"sensor_type"`
+	LanIP          string `json:"lan_ip"`
+	WanIP          string `json:"wan_ip"`
+	LanL4Port      uint16 `json:"lan_l4_port"`
+	WanL4Port      uint16 `json:"wan_l4_port"`
+	L4Proto        uint8  `json:"l4_proto"`
+	Bytes          uint32 `json:"bytes"`
+	Pkts           uint32 `json:"pkts"`
+	IPProtocolVer  int    `json:"ip_protocol_version"`
+}
+
+// Standard Redborder Vault JSON
+type RedborderVault struct {
+	Timestamp  int64  `json:"timestamp"`
+	SensorUUID string `json:"sensor_uuid"`
+	SensorName string `json:"sensor_name"`
+	SensorType string `json:"sensor_type"`
+	Msg        string `json:"msg"`
+	SrcIP      string `json:"src_ip"`
+}
+
 func generateUUID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
+	b := make([]byte, 16); rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 func loadState(path string) (*State, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var state State
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
+	data, err := os.ReadFile(path); if err != nil { return nil, err }
+	var state State; if err := json.Unmarshal(data, &state); err != nil { return nil, err }
 	return &state, nil
 }
 
 func saveState(path string, state *State) error {
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
+	data, err := json.MarshalIndent(state, "", "  "); if err != nil { return err }
 	return os.WriteFile(path, data, 0644)
 }
 
 func getClient(insecure bool) *http.Client {
 	return &http.Client{
 		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
-		},
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}},
 	}
 }
 
 func register(cfg Config, state *State) error {
 	client := getClient(cfg.Insecure)
-	payload := map[string]interface{}{
-		"order":  "register",
-		"type":   cfg.SensorType,
-		"hash":   state.Hash,
-		"cpus":   2,
-		"memory": 4194304,
-	}
+	payload := map[string]interface{}{"order": "register", "type": cfg.SensorType, "hash": state.Hash, "cpus": 2, "memory": 4194304}
 	data, _ := json.Marshal(payload)
-
 	fmt.Printf("[*] Sending registration request to %s...\n", cfg.ManagerURL)
-	resp, err := client.Post(cfg.ManagerURL, "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		return err
-	}
+	resp, err := client.Post(cfg.ManagerURL, "application/json", bytes.NewBuffer(data)); if err != nil { return err }
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("manager returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var res map[string]interface{}
-	if err := json.Unmarshal(body, &res); err != nil {
-		fmt.Printf("[-] Error parsing manager response: %v\n", err)
-	}
-
-	// DEBUG: Print all keys in the response
-	fmt.Printf("[DEBUG] Response keys: ")
-	for k := range res {
-		fmt.Printf("%s ", k)
-	}
-	fmt.Println()
-
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated { return fmt.Errorf("manager returned %d: %s", resp.StatusCode, string(body)) }
+	var res map[string]interface{}; json.Unmarshal(body, &res)
 	if status, ok := res["status"].(string); ok && (status == "registered" || status == "claimed") {
-		if uuid, ok := res["uuid"].(string); ok {
-			state.UUID = uuid
+		if uuid, ok := res["uuid"].(string); ok { state.UUID = uuid }
+		if nodename, ok := res["nodename"].(string); ok { state.Nodename = nodename }
+		if priv, ok := res["private_key"].(string); ok { state.PrivateKey = priv } else if cert, ok := res["cert"].(string); ok {
+			var unquoted string; if err := json.Unmarshal([]byte(cert), &unquoted); err == nil { state.PrivateKey = unquoted } else { state.PrivateKey = cert }
 		}
-		if nodename, ok := res["nodename"].(string); ok {
-			state.Nodename = nodename
-		}
-		if priv, ok := res["private_key"].(string); ok {
-			state.PrivateKey = priv
-		} else if cert, ok := res["cert"].(string); ok {
-			var unquoted string
-			if err := json.Unmarshal([]byte(cert), &unquoted); err == nil {
-				state.PrivateKey = unquoted
-			} else {
-				state.PrivateKey = cert
-			}
-		}
-
-		if client, ok := res["client_name"].(string); ok {
-			state.ClientName = client
-		} else if state.Nodename != "" {
-			state.ClientName = state.Nodename
-		}
-		state.Status = status
-		return nil
+		if client, ok := res["client_name"].(string); ok { state.ClientName = client } else if state.Nodename != "" { state.ClientName = state.Nodename }
+		state.Status = status; return nil
 	}
-
 	return fmt.Errorf("unexpected manager response status: %s", string(body))
 }
 
 func verify(cfg Config, state *State) error {
 	client := getClient(cfg.Insecure)
-	payload := map[string]interface{}{
-		"order": "verify",
-		"hash":  state.Hash,
-		"uuid":  state.UUID,
-	}
+	payload := map[string]interface{}{"order": "verify", "hash": state.Hash, "uuid": state.UUID}
 	data, _ := json.Marshal(payload)
-
-	resp, err := client.Post(cfg.ManagerURL, "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		return err
-	}
+	resp, err := client.Post(cfg.ManagerURL, "application/json", bytes.NewBuffer(data)); if err != nil { return err }
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("[*] Manager response (verify): %s\n", string(body))
-	var res map[string]interface{}
-	json.Unmarshal(body, &res)
-
-	// DEBUG: Print all keys in the response
-	fmt.Printf("[DEBUG] Response keys (verify): ")
-	for k := range res {
-		fmt.Printf("%s ", k)
-	}
-	fmt.Println()
-
+	body, _ := io.ReadAll(resp.Body); var res map[string]interface{}; json.Unmarshal(body, &res)
 	if status, ok := res["status"].(string); ok {
-		if nodename, ok := res["nodename"].(string); ok {
-			state.Nodename = nodename
+		if nodename, ok := res["nodename"].(string); ok { state.Nodename = nodename }
+		if priv, ok := res["private_key"].(string); ok { state.PrivateKey = priv } else if cert, ok := res["cert"].(string); ok {
+			var unquoted string; if err := json.Unmarshal([]byte(cert), &unquoted); err == nil { state.PrivateKey = unquoted } else { state.PrivateKey = cert }
 		}
-		if priv, ok := res["private_key"].(string); ok {
-			state.PrivateKey = priv
-		} else if cert, ok := res["cert"].(string); ok {
-			var unquoted string
-			if err := json.Unmarshal([]byte(cert), &unquoted); err == nil {
-				state.PrivateKey = unquoted
-			} else {
-				state.PrivateKey = cert
-			}
-		}
-
-		if client, ok := res["client_name"].(string); ok {
-			state.ClientName = client
-		} else if state.Nodename != "" {
-			state.ClientName = state.Nodename
-		}
-		state.Status = status
-		return nil
+		if client, ok := res["client_name"].(string); ok { state.ClientName = client } else if state.Nodename != "" { state.ClientName = state.Nodename }
+		state.Status = status; return nil
 	}
-
 	return fmt.Errorf("verification failed: %s", string(body))
 }
 
 func signChefRequest(req *http.Request, clientName string, privateKeyPEM string) error {
-	if privateKeyPEM == "" {
-		return nil
-	}
-
-	block, _ := pem.Decode([]byte(privateKeyPEM))
-	if block == nil {
-		return fmt.Errorf("failed to decode private key PEM")
-	}
-
-	privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse private key: %v", err)
-	}
-
+	if privateKeyPEM == "" { return nil }
+	block, _ := pem.Decode([]byte(privateKeyPEM)); if block == nil { return fmt.Errorf("failed to decode private key PEM") }
+	privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes); if err != nil { return fmt.Errorf("failed to parse private key: %v", err) }
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-
-	path := req.URL.Path
-	if path == "" { path = "/" }
-
-	hPath := sha1.New()
-	hPath.Write([]byte(path))
-	hashedPath := base64.StdEncoding.EncodeToString(hPath.Sum(nil))
-
-	var body []byte
-	if req.Body != nil {
-		body, _ = io.ReadAll(req.Body)
-		req.Body = io.NopCloser(bytes.NewBuffer(body))
-	}
-	hBody := sha1.New()
-	hBody.Write(body)
-	hashedBody := base64.StdEncoding.EncodeToString(hBody.Sum(nil))
-
-	canonicalReq := fmt.Sprintf("Method:%s\nHashed Path:%s\nX-Ops-Content-Hash:%s\nX-Ops-Timestamp:%s\nX-Ops-UserId:%s",
-		req.Method, hashedPath, hashedBody, timestamp, clientName)
-
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.Hash(0), []byte(canonicalReq))
-	if err != nil {
-		return fmt.Errorf("failed to sign: %v", err)
-	}
-
+	path := req.URL.Path; if path == "" { path = "/" }
+	hPath := sha1.New(); hPath.Write([]byte(path)); hashedPath := base64.StdEncoding.EncodeToString(hPath.Sum(nil))
+	var body []byte; if req.Body != nil { body, _ = io.ReadAll(req.Body); req.Body = io.NopCloser(bytes.NewBuffer(body)) }
+	hBody := sha1.New(); hBody.Write(body); hashedBody := base64.StdEncoding.EncodeToString(hBody.Sum(nil))
+	canonicalReq := fmt.Sprintf("Method:%s\nHashed Path:%s\nX-Ops-Content-Hash:%s\nX-Ops-Timestamp:%s\nX-Ops-UserId:%s", req.Method, hashedPath, hashedBody, timestamp, clientName)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.Hash(0), []byte(canonicalReq)); if err != nil { return fmt.Errorf("failed to sign: %v", err) }
 	sigBase64 := base64.StdEncoding.EncodeToString(signature)
-
-	req.Header.Set("X-Ops-Sign", "version=1.0")
-	req.Header.Set("X-Ops-UserId", clientName)
-	req.Header.Set("X-Ops-Timestamp", timestamp)
-	req.Header.Set("X-Ops-Content-Hash", hashedBody)
-	req.Header.Set("Accept", "application/json")
-
+	req.Header.Set("X-Ops-Sign", "version=1.0"); req.Header.Set("X-Ops-UserId", clientName); req.Header.Set("X-Ops-Timestamp", timestamp); req.Header.Set("X-Ops-Content-Hash", hashedBody); req.Header.Set("Accept", "application/json")
 	for i := 0; i*60 < len(sigBase64); i++ {
-		end := (i + 1) * 60
-		if end > len(sigBase64) { end = len(sigBase64) }
-		chunk := sigBase64[i*60:end]
-		req.Header.Set(fmt.Sprintf("X-Ops-Authorization-%d", i+1), chunk)
+		end := (i + 1) * 60; if end > len(sigBase64) { end = len(sigBase64) }
+		req.Header.Set(fmt.Sprintf("X-Ops-Authorization-%d", i+1), sigBase64[i*60:end])
 	}
-
 	return nil
 }
 
 func checkIn(cfg Config, state *State) error {
 	client := getClient(cfg.Insecure)
-
-	baseURL := strings.TrimSuffix(cfg.ManagerURL, "/")
-	baseURL = strings.TrimSuffix(baseURL, "/register")
-
-	if strings.HasSuffix(baseURL, "/sensors") {
-		baseURL = strings.TrimSuffix(baseURL, "/sensors") + "/ips"
-	}
+	baseURL := strings.TrimSuffix(cfg.ManagerURL, "/"); baseURL = strings.TrimSuffix(baseURL, "/register")
+	if strings.HasSuffix(baseURL, "/sensors") { baseURL = strings.TrimSuffix(baseURL, "/sensors") + "/ips" }
 	checkInURL := fmt.Sprintf("%s/has_new_config?sensor[uuid]=%s", baseURL, state.UUID)
-
 	req, _ := http.NewRequest("GET", checkInURL, nil)
-
-	clientName := state.ClientName
-	if clientName == "" && cfg.APIAccessKey != "" {
-		clientName = cfg.APIAccessKey
-	}
-
-	if state.PrivateKey != "" && clientName != "" {
-		if err := signChefRequest(req, clientName, state.PrivateKey); err != nil {
-			fmt.Printf("[-] Error signing request: %v\n", err)
-		}
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
+	clientName := state.ClientName; if clientName == "" && cfg.APIAccessKey != "" { clientName = cfg.APIAccessKey }
+	if state.PrivateKey != "" && clientName != "" { signChefRequest(req, clientName, state.PrivateKey) }
+	resp, err := client.Do(req); if err != nil { return err }
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotModified {
-		return nil
-	}
-
+	if resp.StatusCode == http.StatusNotModified { return nil }
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("[!] NEW CONFIGURATION DETECTED! Ruleset UUID: %s\n", string(body))
-		return nil
-	}
-
+	if resp.StatusCode == http.StatusOK { fmt.Printf("[!] NEW CONFIGURATION DETECTED! Ruleset UUID: %s\n", string(body)); return nil }
 	return fmt.Errorf("check-in failed with status %d: %s", resp.StatusCode, string(body))
 }
 
-func main() {
-	configPath := flag.String("config", "", "JSON config file")
-	managerURL := flag.String("manager", "", "Manager registration URL")
-	apiKey := flag.String("api-key", "", "API Access Key")
-	alertURL := flag.String("alert-url", "", "Alert URL")
-	port := flag.Int("port", 3128, "Port (ignored)")
-	rate := flag.Int("rate", 10, "Heartbeat rate")
-	insecure := flag.Bool("insecure", true, "Skip TLS verification")
-	domain := flag.String("domain", "redborder.cluster", "Redborder domain")
-	verbose := flag.Bool("v", false, "Enable verbose logging")
-	sensorType := flag.Int("type", 31, "Sensor type (31 for Client Proxy)")
-	
-	defaultState := "/sensor-data/proxy-state.json"
-	if os.Getenv("SENSOR_NAME") != "" {
-		defaultState = fmt.Sprintf("/sensor-data/proxy-state-%s.json", os.Getenv("SENSOR_NAME"))
+func handleNetFlowV5(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+	reader := bytes.NewReader(data)
+	var header NetFlowV5Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
+	if header.Version != 5 { return }
+	for i := 0; i < int(header.Count); i++ {
+		var record NetFlowV5Record; if err := binary.Read(reader, binary.BigEndian, &record); err != nil { break }
+		flow := RedborderFlow{
+			Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy",
+			LanIP: net.IP(record.SrcAddr[:]).String(), WanIP: net.IP(record.DstAddr[:]).String(),
+			LanL4Port: record.SrcPort, WanL4Port: record.DstPort, L4Proto: record.Prot, Bytes: record.DOctets, Pkts: record.DPkts, IPProtocolVer: 4,
+		}
+		payload, _ := json.Marshal(flow)
+		resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
 	}
-	stateFile := flag.String("state", defaultState, "Path to state file")
-	flag.Parse()
+}
 
-	fmt.Printf("[+] Redborder Proxy Agent %s\n", VERSION)
-
-	cfg := Config{
-		ManagerURL:   *managerURL,
-		APIAccessKey: *apiKey,
-		AlertURL:     *alertURL,
-		Port:         *port,
-		Rate:         *rate,
-		Insecure:     *insecure,
-		Domain:       *domain,
-		Verbose:      *verbose,
-		SensorType:   *sensorType,
+func handleSyslog(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+	vault := RedborderVault{
+		Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy",
+		Msg: string(data), SrcIP: strings.Split(remoteAddr.String(), ":")[0],
 	}
+	payload, _ := json.Marshal(vault)
+	resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+}
 
-	if *configPath != "" {
-		f, err := os.ReadFile(*configPath)
-		if err == nil {
-			json.Unmarshal(f, &cfg)
+func startUDPListener(port int, mode string, cfg Config, state *State, httpClient *http.Client) {
+	laddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
+	conn, err := net.ListenUDP("udp", laddr); if err != nil { fmt.Printf("[-] Error listening on UDP %d: %v\n", port, err); return }
+	defer conn.Close()
+	fmt.Printf("[+] Listening for %s on UDP %d...\n", mode, port)
+	domain := cfg.Domain; if domain == "" { domain = "redborder.cluster" }
+	topic := "rb_flow"; if mode == "syslog" { topic = "rb_vault" }
+	endpoint := fmt.Sprintf("https://http2k.%s/rbdata/%s/%s", domain, state.UUID, topic)
+	buf := make([]byte, 65535)
+	for {
+		n, remoteAddr, err := conn.ReadFromUDP(buf); if err != nil { continue }
+		packet := buf[:n]
+		switch mode {
+		case "netflow": handleNetFlowV5(packet, cfg, state, httpClient, endpoint)
+		case "syslog": handleSyslog(packet, remoteAddr, cfg, state, httpClient, endpoint)
 		}
 	}
+}
 
-	state, err := loadState(*stateFile)
-	if err != nil {
-		fmt.Println("[*] Initializing new sensor state...")
-		state = &State{Hash: generateUUID(), Status: "unregistered"}
-	}
-
+func main() {
+	cP := flag.String("config", "", "JSON config file"); mU := flag.String("manager", "", "Manager registration URL"); aK := flag.String("api-key", "", "API Access Key"); rateF := flag.Int("rate", 4, "Heartbeat rate in minutes"); inS := flag.Bool("insecure", true, "Skip TLS verification"); domF := flag.String("domain", "redborder.cluster", "Redborder domain"); verbF := flag.Bool("v", false, "Enable verbose logging"); sT := flag.Int("type", 31, "Sensor type")
+	dS := "/sensor-data/proxy-state.json"; if os.Getenv("SENSOR_NAME") != "" { dS = fmt.Sprintf("/sensor-data/proxy-state-%s.json", os.Getenv("SENSOR_NAME")) }
+	sF := flag.String("state", dS, "Path to state file"); flag.Parse()
+	fmt.Printf("[+] Redborder Proxy Agent %s\n", VERSION)
+	cfg := Config{ManagerURL: *mU, APIAccessKey: *aK, Rate: *rateF, Insecure: *inS, Domain: *domF, Verbose: *verbF, SensorType: *sT}
+	if *cP != "" { f, err := os.ReadFile(*cP); if err == nil { json.Unmarshal(f, &cfg) } }
+	state, err := loadState(*sF); if err != nil { state = &State{Hash: generateUUID(), Status: "unregistered"} }
 	if cfg.ManagerURL != "" {
 		for state.Status != "claimed" {
 			if state.Status == "unregistered" {
-				err = register(cfg, state)
-				if err != nil {
-					fmt.Printf("[-] Registration error: %v. Retrying in 10s...\n", err)
-					time.Sleep(10 * time.Second)
-					continue
-				}
-				fmt.Printf("[+] Registered! UUID: %s. Status: %s\n", state.UUID, state.Status)
-				saveState(*stateFile, state)
+				if err := register(cfg, state); err == nil { fmt.Printf("[+] Registered! Manager UUID: %s. Use this to CLAIM: %s\n", state.UUID, state.Hash); saveState(*sF, state) } else { time.Sleep(10 * time.Second); continue }
 			}
-
 			if state.Status == "registered" {
-				fmt.Printf("[*] Waiting for manager approval (claimed status) for UUID %s...\n", state.UUID)
-				err = verify(cfg, state)
-				if err != nil {
-					fmt.Printf("[-] Verify error: %v. Retrying in 10s...\n", err)
-					time.Sleep(10 * time.Second)
-					continue
-				}
-				if state.Status != "claimed" {
-					fmt.Println("[*] Status still 'registered'. Waiting 10s...")
-					time.Sleep(10 * time.Second)
-					continue
-				}
-				fmt.Println("[+] Sensor has been CLAIMED by manager.")
-				saveState(*stateFile, state)
+				if err := verify(cfg, state); err == nil { saveState(*sF, state) } else { time.Sleep(10 * time.Second); continue }
 			}
 		}
+		u, _ := url.Parse(cfg.ManagerURL); d := cfg.Domain; if d == "" { d = "redborder.cluster" }
+		hostsEntry := fmt.Sprintf("%s http2k.%s\n", u.Hostname(), d); f, err := os.OpenFile("/etc/hosts", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644); if err == nil { f.WriteString(hostsEntry); f.Close() }
 	}
-
-	if cfg.AlertURL == "" && cfg.ManagerURL != "" {
-		d := cfg.Domain
-		if d == "" { d = "redborder.cluster" }
-		cfg.AlertURL = fmt.Sprintf("https://http2k.%s/rbdata/%s/rb_event", d, state.UUID)
-
-		u, err := url.Parse(cfg.ManagerURL)
-		if err == nil {
-			managerHost := u.Hostname()
-			hostsEntry := fmt.Sprintf("%s http2k.%s\n", managerHost, d)
-			f, err := os.OpenFile("/etc/hosts", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-			if err == nil {
-				f.WriteString(hostsEntry)
-				f.Close()
-				fmt.Printf("[+] Updated /etc/hosts: %s", hostsEntry)
-			}
-		}
-	}
-
-	sensorName := state.Nodename
-	if sensorName == "" { sensorName = os.Getenv("SENSOR_NAME") }
+	sensorName := state.Nodename; if sensorName == "" { sensorName = os.Getenv("SENSOR_NAME") }
 	fmt.Printf("[+] Proxy Agent active. UUID: %s. Nodename: %s\n", state.UUID, sensorName)
-
-	// Initial heartbeat immediately after claiming
-	if err := checkIn(cfg, state); err != nil && cfg.Verbose {
-		fmt.Printf("[-] Initial heartbeat error: %v\n", err)
-	}
-
-	heartbeatTicker := time.NewTicker(time.Duration(cfg.Rate) * time.Minute)
-	for {
-		select {
-		case <-heartbeatTicker.C:
-			if err := checkIn(cfg, state); err != nil && cfg.Verbose {
-				fmt.Printf("[-] Heartbeat error: %v\n", err)
-			}
-		}
-	}
+	httpClient := getClient(cfg.Insecure)
+	go startUDPListener(2055, "netflow", cfg, state, httpClient)
+	go startUDPListener(514, "syslog", cfg, state, httpClient)
+	checkIn(cfg, state)
+	ticker := time.NewTicker(time.Duration(cfg.Rate) * time.Minute)
+	for { select { case <-ticker.C: checkIn(cfg, state) } }
 }

@@ -43,7 +43,11 @@ The underlying engine that sets up Mount, Network, and PID namespaces. It create
 High-performance mock agents written in Go:
 - **Telemetry Agent**: Generates NetFlow v5/v9, IPFIX, and Syslog alerts with advanced traffic models (Poisson, Bursty, Jitter).
 - **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat (Chef Protocol), and HTTPS alert delivery.
-- **Proxy Agent**: HTTP/HTTPS proxy supporting anonymous and authenticated (Basic Auth) modes. Useful for testing proxy-aware clients and traffic redirection.
+- **Proxy Agent (Forwarder)**: A pure reporting agent that registers with the manager and maintains a heartbeat. It functions as a **Data Converter & Forwarder** (similar to `f2k`), listening on UDP ports, parsing raw telemetry, and sending normalized JSON to the manager (`http2k`):
+  - **Port 514**: Syslog -> `rb_vault` topic (JSON).
+  - **Port 2055**: NetFlow v5 -> `rb_flow` topic (JSON parsed fields).
+  - **Port 6343**: sFlow -> `rb_flow` topic (Planned).
+- **Web Proxy Agent (Server)**: A functional HTTP/HTTPS proxy supporting anonymous and authenticated (Basic Auth) modes. Useful for testing proxy-aware clients and traffic redirection.
 - **SNMP Agent**: Mock SNMPv2c/v3 agent mimicking network devices.
 - **IPMI Agent**: Mock IPMI over LAN server supporting sensor readings (Temp, Fan).
 - **Redfish Agent**: Supports iLO 5 compatibility, HTTPS, and failure simulation.
@@ -156,11 +160,6 @@ Alternatively, a `.gitlab-ci.yml` is also provided for GitLab environments.
 
 ## License
 This project is licensed under the **MIT License**. See the `LICENSE` file for details.
-
----
-**Author**: David Vanhoucke <dvanhoucke@redborder.com>  
-© 2026 redBorder Networks
- License**. See the `LICENSE` file for details.
 
 ---
 **Author**: David Vanhoucke <dvanhoucke@redborder.com>  
