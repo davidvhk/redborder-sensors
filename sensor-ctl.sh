@@ -278,8 +278,8 @@ function start_sandbox() {
             redfish)
                 cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json")
                 ;;
-            proxy)
-                cmd=("/sensor-data/proxy-agent" "-config" "/sensor-data/config-proxy-anon.json")
+            webproxy)
+                cmd=("/sensor-data/webproxy-agent" "-config" "/sensor-data/config-webproxy-anon.json")
                 ;;
             telemetry)
                 cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json")
@@ -287,8 +287,8 @@ function start_sandbox() {
             sflow)
                 cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json")
                 ;;
-            server)
-                cmd=("/sensor-data/server" "-config" "/sensor-data/config-server.json")
+            webserver)
+                cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json")
                 ;;
         esac
     fi
@@ -552,7 +552,7 @@ case "$1" in
                 echo "start stop list stats logs exec shell restore"
                 ;;
             types)
-                echo "ips snmp ipmi redfish proxy telemetry sflow server"
+                echo "ips snmp ipmi redfish webproxy telemetry sflow webserver"
                 ;;
             running)
                 for f in "$STATE_DIR"/*.pid; do
@@ -567,7 +567,7 @@ case "$1" in
         echo ""
         echo "Commands:"
         echo "  start <name> [--ip <ip>] [--gw <gw>] [command|type]  Start a new sensor"
-        echo "    Types: ips, snmp, ipmi, redfish, proxy, telemetry, sflow, server"
+        echo "    Types: ips, snmp, ipmi, redfish, webproxy, telemetry, sflow, webserver"
         echo "    Note: Filenames in sensor-volume/ are automatically resolved to /sensor-data/"
         echo "  stop <name>                                          Stop a running sensor"
         echo "  restore                                              Restore all sensors from persistent config"
