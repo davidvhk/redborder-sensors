@@ -16,8 +16,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math/big"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,7 +23,7 @@ import (
 	"time"
 )
 
-const VERSION = "v1.4 (2026-06-13)"
+const VERSION = "v1.5 (2026-06-13)"
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -41,7 +39,6 @@ type Config struct {
 	ManagerURL   string `json:"manager_url"`
 	APIAccessKey string `json:"api_access_key"`
 	AlertURL     string `json:"alert_url"`
-	Target       string `json:"target"`
 	Port         int    `json:"port"`
 	Rate         int    `json:"rate"`
 	Insecure     bool   `json:"insecure"`
@@ -50,36 +47,10 @@ type Config struct {
 	SensorType   int    `json:"type"`
 }
 
-type ProxyEvent struct {
-	Timestamp   int64  `json:"timestamp"`
-	SrcIP       string `json:"src_ip"`
-	DstIP       string `json:"dst_ip"`
-	DstPort     int    `json:"dst_port"`
-	Method      string `json:"method"`
-	URL         string `json:"url"`
-	Status      int    `json:"status"`
-	BytesSent   int    `json:"bytes_sent"`
-	UserAgent   string `json:"user_agent"`
-	ProxyResult string `json:"proxy_result"`
-	SensorUUID  string `json:"sensor_uuid"`
-	SensorName  string `json:"sensor_name"`
-	SensorType  string `json:"sensor_type"`
-}
-
 func generateUUID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-}
-
-func nrand(n int) int {
-	if n <= 0 { return 0 }
-	res, _ := rand.Int(rand.Reader, big.NewInt(int64(n)))
-	return int(res.Int64())
-}
-
-func getRandomIP() string {
-	return fmt.Sprintf("%d.%d.%d.%d", nrand(223)+1, nrand(256), nrand(256), nrand(256))
 }
 
 func loadState(path string) (*State, error) {
@@ -130,7 +101,6 @@ func register(cfg Config, state *State) error {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("[*] Manager response: %s\n", string(body))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("manager returned %d: %s", resp.StatusCode, string(body))
 	}
@@ -333,24 +303,13 @@ func checkIn(cfg Config, state *State) error {
 	return fmt.Errorf("check-in failed with status %d: %s", resp.StatusCode, string(body))
 }
 
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil { return "127.0.0.1" }
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil { return ipnet.IP.String() }
-		}
-	}
-	return "127.0.0.1"
-}
-
 func main() {
 	configPath := flag.String("config", "", "JSON config file")
 	managerURL := flag.String("manager", "", "Manager registration URL")
 	apiKey := flag.String("api-key", "", "API Access Key")
 	alertURL := flag.String("alert-url", "", "Alert URL")
-	port := flag.Int("port", 3128, "Listening port (ignored in agent mode)")
-	rate := flag.Int("rate", 10, "Event generation rate (events/min)")
+	port := flag.Int("port", 3128, "Port (ignored)")
+	rate := flag.Int("rate", 10, "Heartbeat rate")
 	insecure := flag.Bool("insecure", true, "Skip TLS verification")
 	domain := flag.String("domain", "redborder.cluster", "Redborder domain")
 	verbose := flag.Bool("v", false, "Enable verbose logging")
@@ -427,7 +386,6 @@ func main() {
 		if d == "" { d = "redborder.cluster" }
 		cfg.AlertURL = fmt.Sprintf("https://http2k.%s/rbdata/%s/rb_event", d, state.UUID)
 
-		// Extract manager IP and update /etc/hosts (IPS style)
 		u, err := url.Parse(cfg.ManagerURL)
 		if err == nil {
 			managerHost := u.Hostname()
@@ -441,61 +399,16 @@ func main() {
 		}
 	}
 
-	client := getClient(cfg.Insecure)
 	sensorName := state.Nodename
 	if sensorName == "" { sensorName = os.Getenv("SENSOR_NAME") }
-	if sensorName == "" { sensorName = "mock-proxy" }
-
 	fmt.Printf("[+] Proxy Agent active. UUID: %s. Nodename: %s\n", state.UUID, sensorName)
 
-	heartbeatTicker := time.NewTicker(30 * time.Second)
-	var eventTicker *time.Ticker
-	if cfg.Rate > 0 {
-		eventTicker = time.NewTicker(time.Minute / time.Duration(cfg.Rate))
-	} else {
-		eventTicker = time.NewTicker(10 * time.Second)
-	}
-
-	methods := []string{"GET", "POST", "CONNECT", "PUT", "DELETE"}
-	urls := []string{"http://www.google.com", "https://www.github.com", "http://redborder.com", "https://news.ycombinator.com"}
-	agents := []string{"Mozilla/5.0 (X11; Linux x86_64)", "curl/7.68.0", "PostmanRuntime/7.26.8"}
-	results := []string{"TCP_MISS", "TCP_HIT", "TCP_MEM_HIT", "TCP_DENIED"}
-
-	eventCount := 0
+	heartbeatTicker := time.NewTicker(time.Duration(cfg.Rate) * time.Minute)
 	for {
 		select {
 		case <-heartbeatTicker.C:
-			checkIn(cfg, state)
-
-		case <-eventTicker.C:
-			event := ProxyEvent{
-				Timestamp:   time.Now().Unix(),
-				SrcIP:       getRandomIP(),
-				DstIP:       getRandomIP(),
-				DstPort:     []int{80, 443, 8080}[nrand(3)],
-				Method:      methods[nrand(len(methods))],
-				URL:         urls[nrand(len(urls))],
-				Status:      []int{200, 301, 404, 403, 500}[nrand(5)],
-				BytesSent:   nrand(5000) + 100,
-				UserAgent:   agents[nrand(len(agents))],
-				ProxyResult: results[nrand(len(results))],
-				SensorUUID:  state.UUID,
-				SensorName:  sensorName,
-				SensorType:  "proxy",
-			}
-
-			eventJSON, _ := json.Marshal(event)
-			if cfg.AlertURL != "" {
-				resp, err := client.Post(cfg.AlertURL, "application/json", bytes.NewBuffer(eventJSON))
-				if err == nil {
-					resp.Body.Close()
-					eventCount++
-					if cfg.Verbose || eventCount%10 == 1 {
-						fmt.Printf("[+] Sent Proxy Event #%d: %s\n", eventCount, string(eventJSON))
-					}
-				} else if cfg.Verbose {
-					fmt.Printf("[-] Error sending event: %v\n", err)
-				}
+			if err := checkIn(cfg, state); err != nil && cfg.Verbose {
+				fmt.Printf("[-] Heartbeat error: %v\n", err)
 			}
 		}
 	}

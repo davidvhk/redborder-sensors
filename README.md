@@ -82,6 +82,11 @@ Launch an IPS sensor with a specific name using shorthand.
 sudo ./sensor-ctl.sh start ips1 ips
 ```
 
+Launch a Redborder Proxy agent (reporting mode).
+```bash
+sudo ./sensor-ctl.sh start proxy1 proxy
+```
+
 Launch a telemetry agent with custom networking.
 ```bash
 sudo ./sensor-ctl.sh start s1 --ip 192.168.100.10 --gw 192.168.100.1 telemetry
@@ -151,6 +156,11 @@ Alternatively, a `.gitlab-ci.yml` is also provided for GitLab environments.
 
 ## License
 This project is licensed under the **MIT License**. See the `LICENSE` file for details.
+
+---
+**Author**: David Vanhoucke <dvanhoucke@redborder.com>  
+© 2026 redBorder Networks
+ License**. See the `LICENSE` file for details.
 
 ---
 **Author**: David Vanhoucke <dvanhoucke@redborder.com>  
