@@ -220,7 +220,7 @@ func handleNetFlowV5(data []byte, cfg Config, state *State, httpClient *http.Cli
 	for i := 0; i < int(header.Count); i++ {
 		var record NetFlowV5Record; if err := binary.Read(reader, binary.BigEndian, &record); err != nil { break }
 		flow := RedborderFlow{
-			Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy",
+			Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "netflowv5",
 			LanIP: net.IP(record.SrcAddr[:]).String(), WanIP: net.IP(record.DstAddr[:]).String(),
 			LanL4Port: record.SrcPort, WanL4Port: record.DstPort, L4Proto: record.Prot, Bytes: record.DOctets, Pkts: record.DPkts, IPProtocolVer: 4,
 		}
@@ -256,7 +256,7 @@ func handleNetFlowV9(data []byte, cfg Config, state *State, httpClient *http.Cli
 			if !ok { continue }
 			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
 			for pReader.Len() >= tSize {
-				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy", IPProtocolVer: 4}
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "netflowv9", IPProtocolVer: 4}
 				for _, f := range tmpl.Fields {
 					val := make([]byte, f.Len); pReader.Read(val)
 					switch f.Type {
@@ -313,7 +313,7 @@ func handleIPFIX(data []byte, cfg Config, state *State, httpClient *http.Client,
 			if !ok { continue }
 			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
 			for pReader.Len() >= tSize {
-				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy", IPProtocolVer: 4}
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "ipfix", IPProtocolVer: 4}
 				for _, f := range tmpl.Fields {
 					val := make([]byte, f.Len); pReader.Read(val)
 					switch f.Type {
