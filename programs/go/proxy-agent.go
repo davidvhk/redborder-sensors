@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-const VERSION = "v1.11 (2026-06-13)"
+const VERSION = "v1.12 (2026-06-14)"
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -56,6 +56,22 @@ type NetFlowV5Header struct {
 type NetFlowV5Record struct {
 	SrcAddr [4]byte; DstAddr [4]byte; NextHop [4]byte; Input uint16; Output uint16; DPkts uint32; DOctets uint32; First uint32; Last uint32; SrcPort uint16; DstPort uint16; Pad1 uint8; TCPFlags uint8; Prot uint8; Tos uint8; SrcAs uint16; DstAs uint16; SrcMask uint8; DstMask uint8; Pad2 uint16
 }
+
+type NetFlowV9Header struct {
+	Version uint16; Count uint16; SysUptime uint32; UnixSecs uint32; FlowSequence uint32; SourceID uint32
+}
+
+type IPFIXHeader struct {
+	Version uint16; Length uint16; ExportTime uint32; SequenceNumber uint32; DomainID uint32
+}
+
+type NetField struct { Type uint16; Len uint16 }
+type NetTemplate struct { Fields []NetField }
+
+var (
+	v9Templates    = make(map[uint32]map[uint16]NetTemplate)
+	ipfixTemplates = make(map[uint32]map[uint16]NetTemplate)
+)
 
 // Standard Redborder Flow JSON
 type RedborderFlow struct {
@@ -182,6 +198,21 @@ func checkIn(cfg Config, state *State) error {
 	return fmt.Errorf("check-in failed with status %d: %s", resp.StatusCode, string(body))
 }
 
+func decodeUint(b []byte) uint32 {
+	switch len(b) {
+	case 1: return uint32(b[0])
+	case 2: return uint32(binary.BigEndian.Uint16(b))
+	case 4: return binary.BigEndian.Uint32(b)
+	}
+	return 0
+}
+
+func templateSize(tmpl NetTemplate) int {
+	size := 0
+	for _, f := range tmpl.Fields { size += int(f.Len) }
+	return size
+}
+
 func handleNetFlowV5(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header NetFlowV5Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
@@ -195,6 +226,120 @@ func handleNetFlowV5(data []byte, cfg Config, state *State, httpClient *http.Cli
 		}
 		payload, _ := json.Marshal(flow)
 		resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+	}
+}
+
+func handleNetFlowV9(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+	reader := bytes.NewReader(data)
+	var header NetFlowV9Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
+	for reader.Len() >= 4 {
+		var flowSetID, length uint16
+		binary.Read(reader, binary.BigEndian, &flowSetID); binary.Read(reader, binary.BigEndian, &length)
+		if length < 4 { break }
+		payload := make([]byte, length-4); reader.Read(payload)
+		if flowSetID == 0 { // Template FlowSet
+			pReader := bytes.NewReader(payload)
+			for pReader.Len() >= 4 {
+				var templateID, fieldCount uint16
+				binary.Read(pReader, binary.BigEndian, &templateID); binary.Read(pReader, binary.BigEndian, &fieldCount)
+				var tmpl NetTemplate
+				for i := 0; i < int(fieldCount); i++ {
+					var fieldType, fieldLen uint16
+					binary.Read(pReader, binary.BigEndian, &fieldType); binary.Read(pReader, binary.BigEndian, &fieldLen)
+					tmpl.Fields = append(tmpl.Fields, NetField{fieldType, fieldLen})
+				}
+				if v9Templates[header.SourceID] == nil { v9Templates[header.SourceID] = make(map[uint16]NetTemplate) }
+				v9Templates[header.SourceID][templateID] = tmpl
+			}
+		} else if flowSetID > 255 { // Data FlowSet
+			tmpl, ok := v9Templates[header.SourceID][flowSetID]
+			if !ok { continue }
+			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
+			for pReader.Len() >= tSize {
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy", IPProtocolVer: 4}
+				for _, f := range tmpl.Fields {
+					val := make([]byte, f.Len); pReader.Read(val)
+					switch f.Type {
+					case 1: flow.Bytes = decodeUint(val)
+					case 2: flow.Pkts = decodeUint(val)
+					case 4: flow.L4Proto = uint8(decodeUint(val))
+					case 7: flow.LanL4Port = uint16(decodeUint(val))
+					case 8:
+						flow.LanIP = net.IP(val).String()
+						flow.IPProtocolVer = 4
+					case 12:
+						flow.WanIP = net.IP(val).String()
+						flow.IPProtocolVer = 4
+					case 27:
+						flow.LanIP = net.IP(val).String()
+						flow.IPProtocolVer = 6
+					case 28:
+						flow.WanIP = net.IP(val).String()
+						flow.IPProtocolVer = 6
+					case 11: flow.WanL4Port = uint16(decodeUint(val))
+					}
+				}
+				payloadJSON, _ := json.Marshal(flow)
+				resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadJSON)); if err == nil { resp.Body.Close() }
+			}
+		}
+	}
+}
+
+func handleIPFIX(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+	reader := bytes.NewReader(data)
+	var header IPFIXHeader; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
+	for reader.Len() >= 4 {
+		var setID, length uint16
+		binary.Read(reader, binary.BigEndian, &setID); binary.Read(reader, binary.BigEndian, &length)
+		if length < 4 { break }
+		payload := make([]byte, length-4); reader.Read(payload)
+		if setID == 2 { // Template Set
+			pReader := bytes.NewReader(payload)
+			for pReader.Len() >= 4 {
+				var templateID, fieldCount uint16
+				binary.Read(pReader, binary.BigEndian, &templateID); binary.Read(pReader, binary.BigEndian, &fieldCount)
+				var tmpl NetTemplate
+				for i := 0; i < int(fieldCount); i++ {
+					var fieldType, fieldLen uint16
+					binary.Read(pReader, binary.BigEndian, &fieldType); binary.Read(pReader, binary.BigEndian, &fieldLen)
+					tmpl.Fields = append(tmpl.Fields, NetField{fieldType, fieldLen})
+				}
+				if ipfixTemplates[header.DomainID] == nil { ipfixTemplates[header.DomainID] = make(map[uint16]NetTemplate) }
+				ipfixTemplates[header.DomainID][templateID] = tmpl
+			}
+		} else if setID > 255 { // Data Set
+			tmpl, ok := ipfixTemplates[header.DomainID][setID]
+			if !ok { continue }
+			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
+			for pReader.Len() >= tSize {
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy", IPProtocolVer: 4}
+				for _, f := range tmpl.Fields {
+					val := make([]byte, f.Len); pReader.Read(val)
+					switch f.Type {
+					case 1: flow.Bytes = decodeUint(val)
+					case 2: flow.Pkts = decodeUint(val)
+					case 4: flow.L4Proto = uint8(decodeUint(val))
+					case 7: flow.LanL4Port = uint16(decodeUint(val))
+					case 8:
+						flow.LanIP = net.IP(val).String()
+						flow.IPProtocolVer = 4
+					case 12:
+						flow.WanIP = net.IP(val).String()
+						flow.IPProtocolVer = 4
+					case 27:
+						flow.LanIP = net.IP(val).String()
+						flow.IPProtocolVer = 6
+					case 28:
+						flow.WanIP = net.IP(val).String()
+						flow.IPProtocolVer = 6
+					case 11: flow.WanL4Port = uint16(decodeUint(val))
+					}
+				}
+				payloadJSON, _ := json.Marshal(flow)
+				resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadJSON)); if err == nil { resp.Body.Close() }
+			}
+		}
 	}
 }
 
@@ -220,7 +365,14 @@ func startUDPListener(port int, mode string, cfg Config, state *State, httpClien
 		n, remoteAddr, err := conn.ReadFromUDP(buf); if err != nil { continue }
 		packet := buf[:n]
 		switch mode {
-		case "netflow": handleNetFlowV5(packet, cfg, state, httpClient, endpoint)
+		case "netflow":
+			if len(packet) < 2 { continue }
+			version := binary.BigEndian.Uint16(packet[:2])
+			switch version {
+			case 5: handleNetFlowV5(packet, cfg, state, httpClient, endpoint)
+			case 9: handleNetFlowV9(packet, cfg, state, httpClient, endpoint)
+			case 10: handleIPFIX(packet, cfg, state, httpClient, endpoint)
+			}
 		case "syslog": handleSyslog(packet, remoteAddr, cfg, state, httpClient, endpoint)
 		}
 	}
