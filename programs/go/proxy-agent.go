@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-const VERSION = "v1.12 (2026-06-14)"
+const VERSION = "v1.13 (2026-06-14)"
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -343,6 +343,80 @@ func handleIPFIX(data []byte, cfg Config, state *State, httpClient *http.Client,
 	}
 }
 
+func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+	reader := bytes.NewReader(data)
+	var version, ipVersion uint32
+	binary.Read(reader, binary.BigEndian, &version); if version != 5 { return }
+	binary.Read(reader, binary.BigEndian, &ipVersion)
+	var agentIP []byte; if ipVersion == 1 { agentIP = make([]byte, 4) } else { agentIP = make([]byte, 16) }
+	reader.Read(agentIP)
+	var subAgentID, sequenceNumber, uptime, numSamples uint32
+	binary.Read(reader, binary.BigEndian, &subAgentID); binary.Read(reader, binary.BigEndian, &sequenceNumber); binary.Read(reader, binary.BigEndian, &uptime); binary.Read(reader, binary.BigEndian, &numSamples)
+
+	for i := 0; i < int(numSamples); i++ {
+		var sampleFormat, sampleLength uint32
+		binary.Read(reader, binary.BigEndian, &sampleFormat); binary.Read(reader, binary.BigEndian, &sampleLength)
+		if sampleFormat != 1 { reader.Seek(int64(sampleLength), io.SeekCurrent); continue } // Not a Flow Sample
+
+		sReader := io.LimitReader(reader, int64(sampleLength))
+		var seq, sourceID, samplingRate, samplePool, drops, inputIf, outputIf, numRecords uint32
+		binary.Read(sReader, binary.BigEndian, &seq); binary.Read(sReader, binary.BigEndian, &sourceID); binary.Read(sReader, binary.BigEndian, &samplingRate); binary.Read(sReader, binary.BigEndian, &samplePool); binary.Read(sReader, binary.BigEndian, &drops); binary.Read(sReader, binary.BigEndian, &inputIf); binary.Read(sReader, binary.BigEndian, &outputIf); binary.Read(sReader, binary.BigEndian, &numRecords)
+
+		for j := 0; j < int(numRecords); j++ {
+			var recFormat, recLength uint32
+			binary.Read(sReader, binary.BigEndian, &recFormat); binary.Read(sReader, binary.BigEndian, &recLength)
+			if recFormat != 1 { // Not a Sampled Header
+				io.CopyN(io.Discard, sReader, int64(recLength))
+				continue
+			}
+			var proto, frameLen, stripped uint32
+			binary.Read(sReader, binary.BigEndian, &proto); binary.Read(sReader, binary.BigEndian, &frameLen); binary.Read(sReader, binary.BigEndian, &stripped)
+			var headerLen uint32; binary.Read(sReader, binary.BigEndian, &headerLen)
+			header := make([]byte, headerLen); io.ReadFull(sReader, header)
+			// Skip padding
+			padding := (4 - (headerLen % 4)) % 4
+			io.CopyN(io.Discard, sReader, int64(padding))
+
+			if proto == 1 && len(header) >= 34 { // Ethernet + IPv4
+				ethType := binary.BigEndian.Uint16(header[12:14])
+				if ethType == 0x0800 { // IPv4
+					ipHeader := header[14:]
+					proto := ipHeader[9]; srcIP := net.IP(ipHeader[12:16]); dstIP := net.IP(ipHeader[16:20])
+					ihL := int(ipHeader[0]&0x0f) * 4; transport := ipHeader[ihL:]
+					var sp, dp uint16
+					if (proto == 6 || proto == 17) && len(transport) >= 4 {
+						sp = binary.BigEndian.Uint16(transport[0:2]); dp = binary.BigEndian.Uint16(transport[2:4])
+					}
+					flow := RedborderFlow{
+						Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "sflow",
+						LanIP: srcIP.String(), WanIP: dstIP.String(), LanL4Port: sp, WanL4Port: dp, L4Proto: proto,
+						Bytes: frameLen, Pkts: 1, IPProtocolVer: 4,
+					}
+					payload, _ := json.Marshal(flow)
+					resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+				} else if ethType == 0x86dd && len(header) >= 54 { // IPv6
+					ipHeader := header[14:]
+					proto := ipHeader[6]; srcIP := net.IP(ipHeader[8:24]); dstIP := net.IP(ipHeader[24:40])
+					transport := ipHeader[40:]
+					var sp, dp uint16
+					if (proto == 6 || proto == 17) && len(transport) >= 4 {
+						sp = binary.BigEndian.Uint16(transport[0:2]); dp = binary.BigEndian.Uint16(transport[2:4])
+					}
+					flow := RedborderFlow{
+						Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "sflow",
+						LanIP: srcIP.String(), WanIP: dstIP.String(), LanL4Port: sp, WanL4Port: dp, L4Proto: proto,
+						Bytes: frameLen, Pkts: 1, IPProtocolVer: 6,
+					}
+					payload, _ := json.Marshal(flow)
+					resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+				}
+			}
+		}
+		// Consume any remaining data in sReader (alignment/etc)
+		io.Copy(io.Discard, sReader)
+	}
+}
+
 func handleSyslog(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	vault := RedborderVault{
 		Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy",
@@ -358,7 +432,12 @@ func startUDPListener(port int, mode string, cfg Config, state *State, httpClien
 	defer conn.Close()
 	fmt.Printf("[+] Listening for %s on UDP %d...\n", mode, port)
 	domain := cfg.Domain; if domain == "" { domain = "redborder.cluster" }
-	topic := "rb_flow"; if mode == "syslog" { topic = "rb_vault" }
+	topic := "rb_flow"
+	if mode == "syslog" {
+		topic = "rb_vault"
+	} else if mode == "sflow" {
+		topic = "sflow"
+	}
 	endpoint := fmt.Sprintf("https://http2k.%s/rbdata/%s/%s", domain, state.UUID, topic)
 	buf := make([]byte, 65535)
 	for {
@@ -373,6 +452,8 @@ func startUDPListener(port int, mode string, cfg Config, state *State, httpClien
 			case 9: handleNetFlowV9(packet, cfg, state, httpClient, endpoint)
 			case 10: handleIPFIX(packet, cfg, state, httpClient, endpoint)
 			}
+		case "sflow":
+			handleSFlow(packet, cfg, state, httpClient, endpoint)
 		case "syslog": handleSyslog(packet, remoteAddr, cfg, state, httpClient, endpoint)
 		}
 	}
@@ -402,6 +483,7 @@ func main() {
 	fmt.Printf("[+] Proxy Agent active. UUID: %s. Nodename: %s\n", state.UUID, sensorName)
 	httpClient := getClient(cfg.Insecure)
 	go startUDPListener(2055, "netflow", cfg, state, httpClient)
+	go startUDPListener(6343, "sflow", cfg, state, httpClient)
 	go startUDPListener(514, "syslog", cfg, state, httpClient)
 	checkIn(cfg, state)
 	ticker := time.NewTicker(time.Duration(cfg.Rate) * time.Minute)
