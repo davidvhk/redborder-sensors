@@ -419,7 +419,7 @@ func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client,
 
 func handleSyslog(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	vault := RedborderVault{
-		Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "proxy",
+		Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "vault",
 		Msg: string(data), SrcIP: strings.Split(remoteAddr.String(), ":")[0],
 	}
 	payload, _ := json.Marshal(vault)
