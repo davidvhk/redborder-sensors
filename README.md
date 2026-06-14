@@ -43,10 +43,24 @@ The underlying engine that sets up Mount, Network, and PID namespaces. It create
 High-performance mock agents written in Go:
 - **Telemetry Agent**: Generates NetFlow v5/v9, IPFIX, and Syslog alerts with advanced traffic models (Poisson, Bursty, Jitter).
 - **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat (Chef Protocol), and HTTPS alert delivery.
-- **Proxy Agent (Forwarder)**: A pure reporting agent that registers with the manager and maintains a heartbeat. It functions as a **Data Converter & Forwarder** (similar to `f2k`), listening on UDP ports, parsing raw telemetry, and sending normalized JSON to the manager (`http2k`):
-  - **Port 514**: Syslog -> `rb_vault` topic (JSON).
-  - **Port 2055**: NetFlow v5 -> `rb_flow` topic (JSON parsed fields).
-  - **Port 6343**: sFlow -> `rb_flow` topic (Planned).
+- **Proxy Agent (Forwarder)**: A high-performance telemetry proxy that registers with the manager and forwards raw traffic as normalized JSON. It listens on various UDP ports, parses the protocol, and sends data to the manager (`http2k`):
+  - **Port 514 (Syslog)**: Parses syslog messages and forwards to `rb_vault` topic (SensorType: `vault`).
+  - **Port 2055 (NetFlow/IPFIX)**:
+    - **NetFlow v5**: Parsed and forwarded to `rb_flow` topic (SensorType: `netflowv5`).
+    - **NetFlow v9**: Template-based parsing, forwarded to `rb_flow` topic (SensorType: `netflowv9`).
+    - **IPFIX (v10)**: Template-based parsing, forwarded to `rb_flow` topic (SensorType: `netflowv10`).
+  - **Port 6343 (sFlow)**: Parses sFlow v5 (Flow Samples) and forwards to `sflow` topic (SensorType: `sflow`). Supports IPv4 and IPv6 encapsulated headers.
+
+  **Configuration Example (`config-proxy.json`):**
+  ```json
+  {
+    "manager_url": "https://manager.redborder.cluster/sensors/register",
+    "sensors": [
+      { "sensor_ip": "10.6.50.20", "sensor_uuid": "c4ef1918-0cd0-45a9-a7ec-e38c11a2ea0c" }
+    ]
+  }
+  ```
+  The proxy will automatically add its own registered UUID as `proxy_uuid` in the outgoing JSON while using the mapped `sensor_uuid` for the source.
 - **Web Proxy Agent (Server)**: A functional HTTP/HTTPS proxy supporting anonymous and authenticated (Basic Auth) modes. Useful for testing proxy-aware clients and traffic redirection.
 - **SNMP Agent**: Mock SNMPv2c/v3 agent mimicking network devices.
 - **IPMI Agent**: Mock IPMI over LAN server supporting sensor readings (Temp, Fan).

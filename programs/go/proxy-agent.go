@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-const VERSION = "v1.13 (2026-06-14)"
+const VERSION = "v1.14 (2026-06-14)"
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -37,15 +37,21 @@ type State struct {
 	ClientName string `json:"client_name,omitempty"`
 }
 
+type SensorMapping struct {
+	IP   string `json:"sensor_ip"`
+	UUID string `json:"sensor_uuid"`
+}
+
 type Config struct {
-	ManagerURL   string `json:"manager_url"`
-	APIAccessKey string `json:"api_access_key"`
-	Port         int    `json:"port"`
-	Rate         int    `json:"rate"`
-	Insecure     bool   `json:"insecure"`
-	Domain       string `json:"domain"`
-	Verbose      bool   `json:"verbose"`
-	SensorType   int    `json:"type"`
+	ManagerURL   string          `json:"manager_url"`
+	APIAccessKey string          `json:"api_access_key"`
+	Port         int             `json:"port"`
+	Rate         int             `json:"rate"`
+	Insecure     bool            `json:"insecure"`
+	Domain       string          `json:"domain"`
+	Verbose      bool            `json:"verbose"`
+	SensorType   int             `json:"type"`
+	Sensors      []SensorMapping `json:"sensors"`
 }
 
 // NetFlow v5 structures
@@ -77,6 +83,8 @@ var (
 type RedborderFlow struct {
 	Timestamp      int64  `json:"timestamp"`
 	SensorUUID     string `json:"sensor_uuid"`
+	ProxyUUID      string `json:"proxy_uuid"`
+	SensorIP       string `json:"sensor_ip"`
 	SensorName     string `json:"sensor_name"`
 	SensorType     string `json:"sensor_type"`
 	LanIP          string `json:"lan_ip"`
@@ -93,10 +101,11 @@ type RedborderFlow struct {
 type RedborderVault struct {
 	Timestamp  int64  `json:"timestamp"`
 	SensorUUID string `json:"sensor_uuid"`
+	ProxyUUID  string `json:"proxy_uuid"`
+	SensorIP   string `json:"sensor_ip"`
 	SensorName string `json:"sensor_name"`
 	SensorType string `json:"sensor_type"`
 	Msg        string `json:"msg"`
-	SrcIP      string `json:"src_ip"`
 }
 
 func generateUUID() string {
@@ -213,25 +222,40 @@ func templateSize(tmpl NetTemplate) int {
 	return size
 }
 
-func handleNetFlowV5(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func getSensorUUID(remoteAddr net.Addr, cfg Config, defaultUUID string) string {
+	if remoteAddr == nil { return defaultUUID }
+	host, _, err := net.SplitHostPort(remoteAddr.String())
+	if err != nil { return defaultUUID }
+	for _, s := range cfg.Sensors {
+		if s.IP == host { return s.UUID }
+	}
+	return defaultUUID
+}
+
+func handleNetFlowV5(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header NetFlowV5Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
 	if header.Version != 5 { return }
+	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for i := 0; i < int(header.Count); i++ {
 		var record NetFlowV5Record; if err := binary.Read(reader, binary.BigEndian, &record); err != nil { break }
 		flow := RedborderFlow{
-			Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "netflowv5",
+			Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv5",
 			LanIP: net.IP(record.SrcAddr[:]).String(), WanIP: net.IP(record.DstAddr[:]).String(),
 			LanL4Port: record.SrcPort, WanL4Port: record.DstPort, L4Proto: record.Prot, Bytes: record.DOctets, Pkts: record.DPkts, IPProtocolVer: 4,
 		}
 		payload, _ := json.Marshal(flow)
+		if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
 		resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
 	}
 }
 
-func handleNetFlowV9(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func handleNetFlowV9(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header NetFlowV9Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
+	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for reader.Len() >= 4 {
 		var flowSetID, length uint16
 		binary.Read(reader, binary.BigEndian, &flowSetID); binary.Read(reader, binary.BigEndian, &length)
@@ -256,7 +280,7 @@ func handleNetFlowV9(data []byte, cfg Config, state *State, httpClient *http.Cli
 			if !ok { continue }
 			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
 			for pReader.Len() >= tSize {
-				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "netflowv9", IPProtocolVer: 4}
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv9", IPProtocolVer: 4}
 				for _, f := range tmpl.Fields {
 					val := make([]byte, f.Len); pReader.Read(val)
 					switch f.Type {
@@ -280,15 +304,18 @@ func handleNetFlowV9(data []byte, cfg Config, state *State, httpClient *http.Cli
 					}
 				}
 				payloadJSON, _ := json.Marshal(flow)
+				if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payloadJSON)) }
 				resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadJSON)); if err == nil { resp.Body.Close() }
 			}
 		}
 	}
 }
 
-func handleIPFIX(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func handleIPFIX(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header IPFIXHeader; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
+	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for reader.Len() >= 4 {
 		var setID, length uint16
 		binary.Read(reader, binary.BigEndian, &setID); binary.Read(reader, binary.BigEndian, &length)
@@ -313,7 +340,7 @@ func handleIPFIX(data []byte, cfg Config, state *State, httpClient *http.Client,
 			if !ok { continue }
 			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
 			for pReader.Len() >= tSize {
-				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "ipfix", IPProtocolVer: 4}
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv10", IPProtocolVer: 4}
 				for _, f := range tmpl.Fields {
 					val := make([]byte, f.Len); pReader.Read(val)
 					switch f.Type {
@@ -337,13 +364,14 @@ func handleIPFIX(data []byte, cfg Config, state *State, httpClient *http.Client,
 					}
 				}
 				payloadJSON, _ := json.Marshal(flow)
+				if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payloadJSON)) }
 				resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadJSON)); if err == nil { resp.Body.Close() }
 			}
 		}
 	}
 }
 
-func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func handleSFlow(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var version, ipVersion uint32
 	binary.Read(reader, binary.BigEndian, &version); if version != 5 { return }
@@ -353,6 +381,8 @@ func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client,
 	var subAgentID, sequenceNumber, uptime, numSamples uint32
 	binary.Read(reader, binary.BigEndian, &subAgentID); binary.Read(reader, binary.BigEndian, &sequenceNumber); binary.Read(reader, binary.BigEndian, &uptime); binary.Read(reader, binary.BigEndian, &numSamples)
 
+	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for i := 0; i < int(numSamples); i++ {
 		var sampleFormat, sampleLength uint32
 		binary.Read(reader, binary.BigEndian, &sampleFormat); binary.Read(reader, binary.BigEndian, &sampleLength)
@@ -388,11 +418,12 @@ func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client,
 						sp = binary.BigEndian.Uint16(transport[0:2]); dp = binary.BigEndian.Uint16(transport[2:4])
 					}
 					flow := RedborderFlow{
-						Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "sflow",
+						Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "sflow",
 						LanIP: srcIP.String(), WanIP: dstIP.String(), LanL4Port: sp, WanL4Port: dp, L4Proto: proto,
 						Bytes: frameLen, Pkts: 1, IPProtocolVer: 4,
 					}
 					payload, _ := json.Marshal(flow)
+					if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
 					resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
 				} else if ethType == 0x86dd && len(header) >= 54 { // IPv6
 					ipHeader := header[14:]
@@ -403,11 +434,12 @@ func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client,
 						sp = binary.BigEndian.Uint16(transport[0:2]); dp = binary.BigEndian.Uint16(transport[2:4])
 					}
 					flow := RedborderFlow{
-						Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "sflow",
+						Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "sflow",
 						LanIP: srcIP.String(), WanIP: dstIP.String(), LanL4Port: sp, WanL4Port: dp, L4Proto: proto,
 						Bytes: frameLen, Pkts: 1, IPProtocolVer: 6,
 					}
 					payload, _ := json.Marshal(flow)
+					if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
 					resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
 				}
 			}
@@ -418,11 +450,14 @@ func handleSFlow(data []byte, cfg Config, state *State, httpClient *http.Client,
 }
 
 func handleSyslog(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	vault := RedborderVault{
-		Timestamp: time.Now().Unix(), SensorUUID: state.UUID, SensorName: state.Nodename, SensorType: "vault",
-		Msg: string(data), SrcIP: strings.Split(remoteAddr.String(), ":")[0],
+		Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "vault",
+		Msg: string(data),
 	}
 	payload, _ := json.Marshal(vault)
+	if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
 	resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
 }
 
@@ -448,12 +483,12 @@ func startUDPListener(port int, mode string, cfg Config, state *State, httpClien
 			if len(packet) < 2 { continue }
 			version := binary.BigEndian.Uint16(packet[:2])
 			switch version {
-			case 5: handleNetFlowV5(packet, cfg, state, httpClient, endpoint)
-			case 9: handleNetFlowV9(packet, cfg, state, httpClient, endpoint)
-			case 10: handleIPFIX(packet, cfg, state, httpClient, endpoint)
+			case 5: handleNetFlowV5(packet, remoteAddr, cfg, state, httpClient, endpoint)
+			case 9: handleNetFlowV9(packet, remoteAddr, cfg, state, httpClient, endpoint)
+			case 10: handleIPFIX(packet, remoteAddr, cfg, state, httpClient, endpoint)
 			}
 		case "sflow":
-			handleSFlow(packet, cfg, state, httpClient, endpoint)
+			handleSFlow(packet, remoteAddr, cfg, state, httpClient, endpoint)
 		case "syslog": handleSyslog(packet, remoteAddr, cfg, state, httpClient, endpoint)
 		}
 	}
