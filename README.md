@@ -43,24 +43,36 @@ The underlying engine that sets up Mount, Network, and PID namespaces. It create
 High-performance mock agents written in Go:
 - **Telemetry Agent**: Generates NetFlow v5/v9, IPFIX, and Syslog alerts with advanced traffic models (Poisson, Bursty, Jitter).
 - **IPS Agent**: Simulates a Snort-based IPS, supporting registration, heartbeat (Chef Protocol), and HTTPS alert delivery.
-- **Proxy Agent (Forwarder)**: A high-performance telemetry proxy that registers with the manager and forwards raw traffic as normalized JSON. It listens on various UDP ports, parses the protocol, and sends data to the manager (`http2k`):
-  - **Port 514 (Syslog)**: Parses syslog messages and forwards to `rb_vault` topic (SensorType: `vault`).
-  - **Port 2055 (NetFlow/IPFIX)**:
-    - **NetFlow v5**: Parsed and forwarded to `rb_flow` topic (SensorType: `netflowv5`).
-    - **NetFlow v9**: Template-based parsing, forwarded to `rb_flow` topic (SensorType: `netflowv9`).
-    - **IPFIX (v10)**: Template-based parsing, forwarded to `rb_flow` topic (SensorType: `netflowv10`).
-  - **Port 6343 (sFlow)**: Parses sFlow v5 (Flow Samples) and forwards to `sflow` topic (SensorType: `sflow`). Supports IPv4 and IPv6 encapsulated headers.
+- **Proxy Agent (Forwarder)**: A high-performance telemetry proxy that registers with the manager and forwards raw traffic as normalized JSON. It listens on various UDP ports, parses the protocol, and sends data to the manager (`http2k`).
+
+  **Key Features:**
+  - **JSON Enrichment**: Add custom key-value pairs to flows based on the source IP. Useful for adding location, department, or overriding `sensor_uuid`.
+  - **Dynamic Reload**: Send `SIGHUP` (or `kill -HUP`) to the agent to reload the configuration file without restarting.
+  - **Chef Synchronization**: Automatically generates a `<container>-chefrun.rb` script in `/sensor-data` to help synchronize sensor mappings with the Redborder Manager/Chef Server.
+  - **Forced Credentials**: Bypass registration by specifying `forced_uuid` and `forced_private_key` in the configuration.
 
   **Configuration Example (`config-proxy.json`):**
   ```json
   {
     "manager_url": "https://manager.redborder.cluster/sensors/register",
+    "domain": "redborder.cluster",
+    "forced_uuid": "3c48bf51-8921-485a-bc39-75ea8a837756",
+    "forced_private_key": "-----BEGIN RSA PRIVATE KEY-----\n...",
     "sensors": [
-      { "sensor_ip": "10.6.50.20", "sensor_uuid": "c4ef1918-0cd0-45a9-a7ec-e38c11a2ea0c" }
+      {
+        "sensor_ip": "10.6.50.20",
+        "enrichment": [
+          { "key": "sensor_uuid", "value": "c4ef1918-0cd0-45a9-a7ec-e38c11a2ea0c" },
+          { "key": "location", "value": "Madrid" }
+        ]
+      }
     ]
   }
   ```
-  The proxy will automatically add its own registered UUID as `proxy_uuid` in the outgoing JSON while using the mapped `sensor_uuid` for the source.
+  **Usage Notes:**
+  - **Reload**: `kill -HUP $(cat /tmp/redborder-sensors/proxy1.pid)`
+  - **Chef Sync**: After updating mappings, run the generated script to reconcile with the manager: `knife exec /sensor-data/proxy1-chefrun.rb`
+
 - **Web Proxy Agent (Server)**: A functional HTTP/HTTPS proxy supporting anonymous and authenticated (Basic Auth) modes. Useful for testing proxy-aware clients and traffic redirection.
 - **SNMP Agent**: Mock SNMPv2c/v3 agent mimicking network devices.
 - **IPMI Agent**: Mock IPMI over LAN server supporting sensor readings (Temp, Fan).

@@ -28,12 +28,44 @@ import (
 	"time"
 )
 
-const VERSION = "v1.14 (2026-06-15)"
+const VERSION = "v1.14 (2026-06-15b)"
 
 var (
 	config      Config
 	configMutex sync.RWMutex
 )
+
+func writeChefScript(nodename string) {
+	if nodename == "" { return }
+	idParts := strings.Split(nodename, "-")
+	if len(idParts) < 2 { return }
+	id := idParts[len(idParts)-1]
+	roleName := "rBsensor-" + id
+	
+	scriptPath := fmt.Sprintf("/sensor-data/%s-chefrun.rb", os.Getenv("SENSOR_NAME"))
+	if os.Getenv("SENSOR_NAME") == "" { scriptPath = fmt.Sprintf("/sensor-data/%s-chefrun.rb", nodename) }
+
+	content := fmt.Sprintf(`
+r = search(:role, "name:%s").first
+n = search(:node, "name:%s").first
+if r && n
+  role_overrides = r.override_attributes
+  n.normal_attrs = n.normal_attrs.merge(role_overrides)
+  n.save
+  puts "Successfully copied sensors_mapping and redborder overrides into node storage!"
+else
+  puts "Could not find role or node. Role: #{!r.nil?}, Node: #{!n.nil?}"
+end
+`, roleName, nodename)
+
+	err := os.WriteFile(scriptPath, []byte(content), 0644)
+	if err == nil {
+		fmt.Printf("[+] Chef sync script generated: %s\n", scriptPath)
+		fmt.Printf("[!] IMPORTANT: Whenever you add sensors to the proxy, you MUST run this script in the manager to sync the node info with the role info:\n")
+		fmt.Printf("[!]   knife exec %s\n", scriptPath)
+		fmt.Printf("[!] (This merges role override attributes into the node storage for proper manager reconciliation)\n")
+	}
+}
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -65,6 +97,8 @@ type Config struct {
 	Verbose      bool            `json:"verbose"`
 	SensorType   int             `json:"type"`
 	Sensors      []SensorMapping `json:"sensors"`
+	ForcedUUID   string          `json:"forced_uuid,omitempty"`
+	ForcedPrivateKey string      `json:"forced_private_key,omitempty"`
 }
 
 // NetFlow v5 structures
@@ -568,6 +602,17 @@ func main() {
 	currentCfg := config
 	configMutex.RUnlock()
 
+	// Handle forced credentials
+	if currentCfg.ForcedUUID != "" && currentCfg.ForcedPrivateKey != "" {
+		fmt.Printf("[!] Using FORCED credentials from config (UUID: %s)\n", currentCfg.ForcedUUID)
+		state.UUID = currentCfg.ForcedUUID
+		state.PrivateKey = currentCfg.ForcedPrivateKey
+		state.Status = "claimed"
+		if state.Nodename == "" { state.Nodename = os.Getenv("SENSOR_NAME") }
+		if state.ClientName == "" { state.ClientName = state.Nodename }
+		saveState(*sF, state)
+	}
+
 	if currentCfg.ManagerURL != "" {
 		for state.Status != "claimed" {
 			configMutex.RLock()
@@ -585,6 +630,10 @@ func main() {
 	}
 	sensorName := state.Nodename; if sensorName == "" { sensorName = os.Getenv("SENSOR_NAME") }
 	fmt.Printf("[+] Proxy Agent active. UUID: %s. Nodename: %s\n", state.UUID, sensorName)
+	
+	// Generate the Chef sync script
+	writeChefScript(sensorName)
+
 	httpClient := getClient(currentCfg.Insecure)
 	go startUDPListener(2055, "netflow", state, httpClient)
 	go startUDPListener(6343, "sflow", state, httpClient)
