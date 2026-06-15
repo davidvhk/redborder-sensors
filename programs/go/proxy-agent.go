@@ -21,11 +21,19 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
-const VERSION = "v1.14 (2026-06-14)"
+const VERSION = "v1.14 (2026-06-15)"
+
+var (
+	config      Config
+	configMutex sync.RWMutex
+)
 
 type State struct {
 	UUID       string `json:"uuid"`
@@ -37,9 +45,14 @@ type State struct {
 	ClientName string `json:"client_name,omitempty"`
 }
 
+type Enrichment struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 type SensorMapping struct {
-	IP   string `json:"sensor_ip"`
-	UUID string `json:"sensor_uuid"`
+	IP         string       `json:"sensor_ip"`
+	Enrichment []Enrichment `json:"enrichment"`
 }
 
 type Config struct {
@@ -222,39 +235,65 @@ func templateSize(tmpl NetTemplate) int {
 	return size
 }
 
-func getSensorUUID(remoteAddr net.Addr, cfg Config, defaultUUID string) string {
-	if remoteAddr == nil { return defaultUUID }
+func getSensorMapping(remoteAddr net.Addr) *SensorMapping {
+	if remoteAddr == nil { return nil }
 	host, _, err := net.SplitHostPort(remoteAddr.String())
-	if err != nil { return defaultUUID }
-	for _, s := range cfg.Sensors {
-		if s.IP == host { return s.UUID }
+	if err != nil { return nil }
+	configMutex.RLock()
+	defer configMutex.RUnlock()
+	for _, s := range config.Sensors {
+		if s.IP == host {
+			if config.Verbose { fmt.Printf("[*] Matched sensor mapping for IP: %s\n", host) }
+			return &s
+		}
 	}
-	return defaultUUID
+	return nil
 }
 
-func handleNetFlowV5(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func sendPayload(httpClient *http.Client, endpoint string, payload interface{}, mapping *SensorMapping) {
+	var payloadBytes []byte
+	configMutex.RLock()
+	verbose := config.Verbose
+	configMutex.RUnlock()
+
+	if mapping != nil && len(mapping.Enrichment) > 0 {
+		if verbose { fmt.Printf("[*] Applying enrichment for sensor %s (%d fields)\n", mapping.IP, len(mapping.Enrichment)) }
+		var m map[string]interface{}
+		data, _ := json.Marshal(payload)
+		json.Unmarshal(data, &m)
+		for _, e := range mapping.Enrichment {
+			m[e.Key] = e.Value
+		}
+		payloadBytes, _ = json.Marshal(m)
+	} else {
+		payloadBytes, _ = json.Marshal(payload)
+	}
+
+	if verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payloadBytes)) }
+	resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadBytes)); if err == nil { resp.Body.Close() }
+}
+
+func handleNetFlowV5(data []byte, remoteAddr net.Addr, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header NetFlowV5Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
 	if header.Version != 5 { return }
-	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	mapping := getSensorMapping(remoteAddr)
 	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for i := 0; i < int(header.Count); i++ {
 		var record NetFlowV5Record; if err := binary.Read(reader, binary.BigEndian, &record); err != nil { break }
 		flow := RedborderFlow{
-			Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv5",
+			Timestamp: time.Now().Unix(), SensorUUID: state.UUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv5",
 			LanIP: net.IP(record.SrcAddr[:]).String(), WanIP: net.IP(record.DstAddr[:]).String(),
 			LanL4Port: record.SrcPort, WanL4Port: record.DstPort, L4Proto: record.Prot, Bytes: record.DOctets, Pkts: record.DPkts, IPProtocolVer: 4,
 		}
-		payload, _ := json.Marshal(flow)
-		if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
-		resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+		sendPayload(httpClient, endpoint, flow, mapping)
 	}
 }
 
-func handleNetFlowV9(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func handleNetFlowV9(data []byte, remoteAddr net.Addr, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header NetFlowV9Header; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
-	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	mapping := getSensorMapping(remoteAddr)
 	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for reader.Len() >= 4 {
 		var flowSetID, length uint16
@@ -280,7 +319,7 @@ func handleNetFlowV9(data []byte, remoteAddr net.Addr, cfg Config, state *State,
 			if !ok { continue }
 			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
 			for pReader.Len() >= tSize {
-				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv9", IPProtocolVer: 4}
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv9", IPProtocolVer: 4}
 				for _, f := range tmpl.Fields {
 					val := make([]byte, f.Len); pReader.Read(val)
 					switch f.Type {
@@ -303,18 +342,16 @@ func handleNetFlowV9(data []byte, remoteAddr net.Addr, cfg Config, state *State,
 					case 11: flow.WanL4Port = uint16(decodeUint(val))
 					}
 				}
-				payloadJSON, _ := json.Marshal(flow)
-				if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payloadJSON)) }
-				resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadJSON)); if err == nil { resp.Body.Close() }
+				sendPayload(httpClient, endpoint, flow, mapping)
 			}
 		}
 	}
 }
 
-func handleIPFIX(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func handleIPFIX(data []byte, remoteAddr net.Addr, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var header IPFIXHeader; if err := binary.Read(reader, binary.BigEndian, &header); err != nil { return }
-	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	mapping := getSensorMapping(remoteAddr)
 	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for reader.Len() >= 4 {
 		var setID, length uint16
@@ -340,7 +377,7 @@ func handleIPFIX(data []byte, remoteAddr net.Addr, cfg Config, state *State, htt
 			if !ok { continue }
 			pReader := bytes.NewReader(payload); tSize := templateSize(tmpl)
 			for pReader.Len() >= tSize {
-				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv10", IPProtocolVer: 4}
+				flow := RedborderFlow{Timestamp: time.Now().Unix(), SensorUUID: state.UUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "netflowv10", IPProtocolVer: 4}
 				for _, f := range tmpl.Fields {
 					val := make([]byte, f.Len); pReader.Read(val)
 					switch f.Type {
@@ -363,15 +400,13 @@ func handleIPFIX(data []byte, remoteAddr net.Addr, cfg Config, state *State, htt
 					case 11: flow.WanL4Port = uint16(decodeUint(val))
 					}
 				}
-				payloadJSON, _ := json.Marshal(flow)
-				if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payloadJSON)) }
-				resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payloadJSON)); if err == nil { resp.Body.Close() }
+				sendPayload(httpClient, endpoint, flow, mapping)
 			}
 		}
 	}
 }
 
-func handleSFlow(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
+func handleSFlow(data []byte, remoteAddr net.Addr, state *State, httpClient *http.Client, endpoint string) {
 	reader := bytes.NewReader(data)
 	var version, ipVersion uint32
 	binary.Read(reader, binary.BigEndian, &version); if version != 5 { return }
@@ -381,7 +416,7 @@ func handleSFlow(data []byte, remoteAddr net.Addr, cfg Config, state *State, htt
 	var subAgentID, sequenceNumber, uptime, numSamples uint32
 	binary.Read(reader, binary.BigEndian, &subAgentID); binary.Read(reader, binary.BigEndian, &sequenceNumber); binary.Read(reader, binary.BigEndian, &uptime); binary.Read(reader, binary.BigEndian, &numSamples)
 
-	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+	mapping := getSensorMapping(remoteAddr)
 	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	for i := 0; i < int(numSamples); i++ {
 		var sampleFormat, sampleLength uint32
@@ -418,13 +453,11 @@ func handleSFlow(data []byte, remoteAddr net.Addr, cfg Config, state *State, htt
 						sp = binary.BigEndian.Uint16(transport[0:2]); dp = binary.BigEndian.Uint16(transport[2:4])
 					}
 					flow := RedborderFlow{
-						Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "sflow",
+						Timestamp: time.Now().Unix(), SensorUUID: state.UUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "sflow",
 						LanIP: srcIP.String(), WanIP: dstIP.String(), LanL4Port: sp, WanL4Port: dp, L4Proto: proto,
 						Bytes: frameLen, Pkts: 1, IPProtocolVer: 4,
 					}
-					payload, _ := json.Marshal(flow)
-					if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
-					resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+					sendPayload(httpClient, endpoint, flow, mapping)
 				} else if ethType == 0x86dd && len(header) >= 54 { // IPv6
 					ipHeader := header[14:]
 					proto := ipHeader[6]; srcIP := net.IP(ipHeader[8:24]); dstIP := net.IP(ipHeader[24:40])
@@ -434,13 +467,11 @@ func handleSFlow(data []byte, remoteAddr net.Addr, cfg Config, state *State, htt
 						sp = binary.BigEndian.Uint16(transport[0:2]); dp = binary.BigEndian.Uint16(transport[2:4])
 					}
 					flow := RedborderFlow{
-						Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "sflow",
+						Timestamp: time.Now().Unix(), SensorUUID: state.UUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "sflow",
 						LanIP: srcIP.String(), WanIP: dstIP.String(), LanL4Port: sp, WanL4Port: dp, L4Proto: proto,
 						Bytes: frameLen, Pkts: 1, IPProtocolVer: 6,
 					}
-					payload, _ := json.Marshal(flow)
-					if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
-					resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+					sendPayload(httpClient, endpoint, flow, mapping)
 				}
 			}
 		}
@@ -449,24 +480,25 @@ func handleSFlow(data []byte, remoteAddr net.Addr, cfg Config, state *State, htt
 	}
 }
 
-func handleSyslog(data []byte, remoteAddr net.Addr, cfg Config, state *State, httpClient *http.Client, endpoint string) {
-	sensorUUID := getSensorUUID(remoteAddr, cfg, state.UUID)
+func handleSyslog(data []byte, remoteAddr net.Addr, state *State, httpClient *http.Client, endpoint string) {
+	mapping := getSensorMapping(remoteAddr)
 	sensorIP, _, _ := net.SplitHostPort(remoteAddr.String())
 	vault := RedborderVault{
-		Timestamp: time.Now().Unix(), SensorUUID: sensorUUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "vault",
+		Timestamp: time.Now().Unix(), SensorUUID: state.UUID, ProxyUUID: state.UUID, SensorIP: sensorIP, SensorName: state.Nodename, SensorType: "vault",
 		Msg: string(data),
 	}
-	payload, _ := json.Marshal(vault)
-	if cfg.Verbose { fmt.Printf("[DEBUG] Sending payload: %s\n", string(payload)) }
-	resp, err := httpClient.Post(endpoint, "application/json", bytes.NewBuffer(payload)); if err == nil { resp.Body.Close() }
+	sendPayload(httpClient, endpoint, vault, mapping)
 }
 
-func startUDPListener(port int, mode string, cfg Config, state *State, httpClient *http.Client) {
+func startUDPListener(port int, mode string, state *State, httpClient *http.Client) {
 	laddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
 	conn, err := net.ListenUDP("udp", laddr); if err != nil { fmt.Printf("[-] Error listening on UDP %d: %v\n", port, err); return }
 	defer conn.Close()
 	fmt.Printf("[+] Listening for %s on UDP %d...\n", mode, port)
-	domain := cfg.Domain; if domain == "" { domain = "redborder.cluster" }
+	configMutex.RLock()
+	domain := config.Domain
+	configMutex.RUnlock()
+	if domain == "" { domain = "redborder.cluster" }
 	topic := "rb_flow"
 	if mode == "syslog" {
 		topic = "rb_vault"
@@ -483,13 +515,13 @@ func startUDPListener(port int, mode string, cfg Config, state *State, httpClien
 			if len(packet) < 2 { continue }
 			version := binary.BigEndian.Uint16(packet[:2])
 			switch version {
-			case 5: handleNetFlowV5(packet, remoteAddr, cfg, state, httpClient, endpoint)
-			case 9: handleNetFlowV9(packet, remoteAddr, cfg, state, httpClient, endpoint)
-			case 10: handleIPFIX(packet, remoteAddr, cfg, state, httpClient, endpoint)
+			case 5: handleNetFlowV5(packet, remoteAddr, state, httpClient, endpoint)
+			case 9: handleNetFlowV9(packet, remoteAddr, state, httpClient, endpoint)
+			case 10: handleIPFIX(packet, remoteAddr, state, httpClient, endpoint)
 			}
 		case "sflow":
-			handleSFlow(packet, remoteAddr, cfg, state, httpClient, endpoint)
-		case "syslog": handleSyslog(packet, remoteAddr, cfg, state, httpClient, endpoint)
+			handleSFlow(packet, remoteAddr, state, httpClient, endpoint)
+		case "syslog": handleSyslog(packet, remoteAddr, state, httpClient, endpoint)
 		}
 	}
 }
@@ -499,28 +531,74 @@ func main() {
 	dS := "/sensor-data/proxy-state.json"; if os.Getenv("SENSOR_NAME") != "" { dS = fmt.Sprintf("/sensor-data/proxy-state-%s.json", os.Getenv("SENSOR_NAME")) }
 	sF := flag.String("state", dS, "Path to state file"); flag.Parse()
 	fmt.Printf("[+] Redborder Proxy Agent %s\n", VERSION)
-	cfg := Config{ManagerURL: *mU, APIAccessKey: *aK, Rate: *rateF, Insecure: *inS, Domain: *domF, Verbose: *verbF, SensorType: *sT}
-	if *cP != "" { f, err := os.ReadFile(*cP); if err == nil { json.Unmarshal(f, &cfg) } }
-	state, err := loadState(*sF); if err != nil { state = &State{Hash: generateUUID(), Status: "unregistered"} }
-	if cfg.ManagerURL != "" {
-		for state.Status != "claimed" {
-			if state.Status == "unregistered" {
-				if err := register(cfg, state); err == nil { fmt.Printf("[+] Registered! Manager UUID: %s. Use this to CLAIM: %s\n", state.UUID, state.Hash); saveState(*sF, state) } else { time.Sleep(10 * time.Second); continue }
-			}
-			if state.Status == "registered" {
-				if err := verify(cfg, state); err == nil { saveState(*sF, state) } else { time.Sleep(10 * time.Second); continue }
+
+	loadConfig := func() {
+		newCfg := Config{ManagerURL: *mU, APIAccessKey: *aK, Rate: *rateF, Insecure: *inS, Domain: *domF, Verbose: *verbF, SensorType: *sT}
+		if *cP != "" {
+			f, err := os.ReadFile(*cP)
+			if err == nil {
+				if err := json.Unmarshal(f, &newCfg); err != nil {
+					fmt.Printf("[-] Error parsing config file %s: %v\n", *cP, err)
+				}
+			} else {
+				fmt.Printf("[-] Error reading config file %s: %v\n", *cP, err)
 			}
 		}
-		u, _ := url.Parse(cfg.ManagerURL); d := cfg.Domain; if d == "" { d = "redborder.cluster" }
+		configMutex.Lock()
+		config = newCfg
+		configMutex.Unlock()
+		fmt.Printf("[+] Configuration loaded/reloaded from %s\n", *cP)
+	}
+
+	loadConfig()
+
+	// SIGHUP handler
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP)
+	go func() {
+		for {
+			<-sigs
+			fmt.Println("[!] SIGHUP received, reloading config...")
+			loadConfig()
+		}
+	}()
+
+	state, err := loadState(*sF); if err != nil { state = &State{Hash: generateUUID(), Status: "unregistered"} }
+	configMutex.RLock()
+	currentCfg := config
+	configMutex.RUnlock()
+
+	if currentCfg.ManagerURL != "" {
+		for state.Status != "claimed" {
+			configMutex.RLock()
+			currentCfg = config
+			configMutex.RUnlock()
+			if state.Status == "unregistered" {
+				if err := register(currentCfg, state); err == nil { fmt.Printf("[+] Registered! Manager UUID: %s. Use this to CLAIM: %s\n", state.UUID, state.Hash); saveState(*sF, state) } else { time.Sleep(10 * time.Second); continue }
+			}
+			if state.Status == "registered" {
+				if err := verify(currentCfg, state); err == nil { saveState(*sF, state) } else { time.Sleep(10 * time.Second); continue }
+			}
+		}
+		u, _ := url.Parse(currentCfg.ManagerURL); d := currentCfg.Domain; if d == "" { d = "redborder.cluster" }
 		hostsEntry := fmt.Sprintf("%s http2k.%s\n", u.Hostname(), d); f, err := os.OpenFile("/etc/hosts", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644); if err == nil { f.WriteString(hostsEntry); f.Close() }
 	}
 	sensorName := state.Nodename; if sensorName == "" { sensorName = os.Getenv("SENSOR_NAME") }
 	fmt.Printf("[+] Proxy Agent active. UUID: %s. Nodename: %s\n", state.UUID, sensorName)
-	httpClient := getClient(cfg.Insecure)
-	go startUDPListener(2055, "netflow", cfg, state, httpClient)
-	go startUDPListener(6343, "sflow", cfg, state, httpClient)
-	go startUDPListener(514, "syslog", cfg, state, httpClient)
-	checkIn(cfg, state)
-	ticker := time.NewTicker(time.Duration(cfg.Rate) * time.Minute)
-	for { select { case <-ticker.C: checkIn(cfg, state) } }
+	httpClient := getClient(currentCfg.Insecure)
+	go startUDPListener(2055, "netflow", state, httpClient)
+	go startUDPListener(6343, "sflow", state, httpClient)
+	go startUDPListener(514, "syslog", state, httpClient)
+
+	checkIn(currentCfg, state)
+	for {
+		configMutex.RLock()
+		rate := config.Rate
+		configMutex.RUnlock()
+		time.Sleep(time.Duration(rate) * time.Minute)
+		configMutex.RLock()
+		currentCfg = config
+		configMutex.RUnlock()
+		checkIn(currentCfg, state)
+	}
 }

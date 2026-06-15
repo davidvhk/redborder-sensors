@@ -264,34 +264,34 @@ function start_sandbox() {
     echo "[+] Starting sensor '$name' (IP: $container_ip, GW: $host_ip)..."
 
     # Shorthand resolution
-    if [ ${#cmd[@]} -eq 1 ]; then
+    if [ ${#cmd[@]} -gt 0 ]; then
         case "${cmd[0]}" in
             ips)
-                cmd=("/sensor-data/ips-agent" "-config" "/sensor-data/config-ips.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/ips-agent" "-config" "/sensor-data/config-ips.json") || cmd=("/sensor-data/ips-agent" "${cmd[@]:1}")
                 ;;
             snmp)
-                cmd=("/sensor-data/snmp-agent" "-config" "/sensor-data/config-snmp.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/snmp-agent" "-config" "/sensor-data/config-snmp.json") || cmd=("/sensor-data/snmp-agent" "${cmd[@]:1}")
                 ;;
             ipmi)
-                cmd=("/sensor-data/ipmi-agent" "-config" "/sensor-data/config-ipmi.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/ipmi-agent" "-config" "/sensor-data/config-ipmi.json") || cmd=("/sensor-data/ipmi-agent" "${cmd[@]:1}")
                 ;;
             redfish)
-                cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json") || cmd=("/sensor-data/redfish-agent" "${cmd[@]:1}")
                 ;;
             webproxy)
-                cmd=("/sensor-data/webproxy-agent" "-config" "/sensor-data/config-webproxy-anon.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/webproxy-agent" "-config" "/sensor-data/config-webproxy-anon.json") || cmd=("/sensor-data/webproxy-agent" "${cmd[@]:1}")
                 ;;
             telemetry)
-                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json") || cmd=("/sensor-data/telemetry-agent" "${cmd[@]:1}")
                 ;;
             sflow)
-                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json") || cmd=("/sensor-data/telemetry-agent" "${cmd[@]:1}")
                 ;;
             webserver)
-                cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json") || cmd=("/sensor-data/webserver" "${cmd[@]:1}")
                 ;;
             proxy)
-                cmd=("/sensor-data/proxy-agent" "-config" "/sensor-data/config-proxy.json")
+                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/proxy" "-config" "/sensor-data/config-proxy.json") || cmd=("/sensor-data/proxy" "${cmd[@]:1}")
                 ;;
         esac
     fi

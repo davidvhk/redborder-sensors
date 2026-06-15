@@ -1,9 +1,19 @@
 {
-  "manager_url": "https://192.168.1.25/api/v1/sensors",
+  "manager_url": "https://10.1.33.160/api/v1/sensors",
   "api_access_key": "",
-  "domain": "redborder.cluster",
+  "domain": "vhk.cluster",
   "insecure": true,
   "port": 3128,
   "type": 31,
-  "rate": 4
+  "rate": 4,
+  "sensors": [
+    {
+      "sensor_ip": "192.168.108.3",
+      "enrichment": [
+        {"key": "sensor_uuid", "value": "550e8400-e29b-41d4-a716-446655440000"},
+        {"key": "location", "value": "Madrid"},
+        {"key": "department", "value": "Marketing"}
+      ]
+    }
+  ]
 }
