@@ -433,16 +433,18 @@ func pickScenario(scenarios []IPSScenario) *IPSScenario {
 }
 
 func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "127.0.0.1"
-	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+	for i := 0; i < 10; i++ {
+		addrs, err := net.InterfaceAddrs()
+		if err == nil {
+			for _, address := range addrs {
+				if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+					if ipnet.IP.To4() != nil {
+						return ipnet.IP.String()
+					}
+				}
 			}
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	return "127.0.0.1"
 }

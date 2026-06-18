@@ -72,6 +72,8 @@ High-performance mock agents written in Go:
   **Usage Notes:**
   - **Reload**: `kill -HUP $(cat /tmp/redborder-sensors/proxy1.pid)`
   - **Chef Sync**: After updating mappings, run the generated script to reconcile with the manager: `knife exec /sensor-data/proxy1-chefrun.rb`
+  - **Syslog/Vault Source IPs**: If you are running the `telemetry-agent` in syslog mode to send data to an Rsyslog server running on the *same physical host*, you **must target the sandbox's Gateway IP (the bridge IP)** instead of the host's external IP. If you target the external IP, local routing quirks may cause Rsyslog to register the source IP (`$fromhost-ip`) as `127.0.0.1`.
+    - *Example:* `sensor-ctl.sh start vault1 --ip 192.168.105.2 telemetry -target 192.168.105.1 -mode syslog`
 
 - **Web Proxy Agent (Server)**: A functional HTTP/HTTPS proxy supporting anonymous and authenticated (Basic Auth) modes. Useful for testing proxy-aware clients and traffic redirection.
 - **SNMP Agent**: Mock SNMPv2c/v3 agent mimicking network devices.
