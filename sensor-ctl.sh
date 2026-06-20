@@ -177,9 +177,10 @@ function start_sandbox() {
 
     local custom_ip=""
     local custom_gw=""
+    local use_macvlan=0
 
     if [ -z "$name" ]; then
-        echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [command|type]"
+        echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [--mac] [command|type]"
         echo "Example: $0 start ips1 ips"
         exit 1
     fi
@@ -208,9 +209,13 @@ function start_sandbox() {
                 custom_gw="$2"
                 shift 2
                 ;;
+            --mac)
+                use_macvlan=1
+                shift
+                ;;
             *)
                 echo "[-] Error: Unknown option '$1'"
-                echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [command...]"
+                echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [--mac] [command...]"
                 exit 1
                 ;;
         esac
@@ -267,31 +272,31 @@ function start_sandbox() {
     if [ ${#cmd[@]} -gt 0 ]; then
         case "${cmd[0]}" in
             ips)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/ips-agent" "-config" "/sensor-data/config-ips.json") || cmd=("/sensor-data/ips-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/ips-agent" "-config" "/sensor-data/config-ips.json" "${cmd[@]:1}")
                 ;;
             snmp)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/snmp-agent" "-config" "/sensor-data/config-snmp.json") || cmd=("/sensor-data/snmp-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/snmp-agent" "-config" "/sensor-data/config-snmp.json" "${cmd[@]:1}")
                 ;;
             ipmi)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/ipmi-agent" "-config" "/sensor-data/config-ipmi.json") || cmd=("/sensor-data/ipmi-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/ipmi-agent" "-config" "/sensor-data/config-ipmi.json" "${cmd[@]:1}")
                 ;;
             redfish)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json") || cmd=("/sensor-data/redfish-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json" "${cmd[@]:1}")
                 ;;
             webproxy)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/webproxy-agent" "-config" "/sensor-data/config-webproxy-anon.json") || cmd=("/sensor-data/webproxy-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/webproxy-agent" "-config" "/sensor-data/config-webproxy-anon.json" "${cmd[@]:1}")
                 ;;
             telemetry)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json") || cmd=("/sensor-data/telemetry-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json" "${cmd[@]:1}")
                 ;;
             sflow)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json") || cmd=("/sensor-data/telemetry-agent" "${cmd[@]:1}")
+                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json" "${cmd[@]:1}")
                 ;;
             webserver)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json") || cmd=("/sensor-data/webserver" "${cmd[@]:1}")
+                cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json" "${cmd[@]:1}")
                 ;;
             proxy)
-                [ ${#cmd[@]} -eq 1 ] && cmd=("/sensor-data/proxy" "-config" "/sensor-data/config-proxy.json") || cmd=("/sensor-data/proxy" "${cmd[@]:1}")
+                cmd=("/sensor-data/proxy" "-config" "/sensor-data/config-proxy.json" "${cmd[@]:1}")
                 ;;
         esac
     fi
@@ -336,6 +341,7 @@ function start_sandbox() {
     mkdir -p "$pdir"
     echo "$container_ip" > "$pdir/ip"
     echo "$host_ip" > "$pdir/gw"
+    echo "$use_macvlan" > "$pdir/mac"
     if [ ${#cmd[@]} -gt 0 ]; then
         printf "%s\n" "${cmd[@]}" > "$pdir/start_cmd"
     else
@@ -350,40 +356,96 @@ function start_sandbox() {
     if [ "$br_id" == "50" ]; then br_id="50"; fi # Keep 50 for custom
     local br_iface="br-$br_id"
     
-    echo "[+] Configuring network for PID $container_pid..."
-    
-    # Create bridge if it doesn't exist
-    if ! ip link show "$br_iface" &>/dev/null; then
-        echo "[+] Creating bridge $br_iface for subnet $subnet_prefix/24..."
-        ip link add "$br_iface" type bridge
-        ip addr add "$host_ip/24" dev "$br_iface"
+    # Try to find physical interface
+    local phys_iface=$(ip route | grep default | awk '{print $5}' | head -n 1)
+
+    if [ "$use_macvlan" -eq 1 ]; then
+        if [ -z "$phys_iface" ]; then
+            echo "[-] Error: Cannot use --mac without a default physical interface."
+            exit 1
+        fi
+        echo "[+] Configuring MACVLAN network for PID $container_pid attached to $phys_iface..."
+        
+        # Create macvlan interface
+        ip link add "$ns_iface" link "$phys_iface" type macvlan mode bridge
+        ip link set "$ns_iface" netns "$container_pid"
+        
+        "$BUSYBOX" nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
+        "$BUSYBOX" nsenter -t "$container_pid" -n ip link set "$ns_iface" up
+        "$BUSYBOX" nsenter -t "$container_pid" -n ip route add default via "$host_ip"
+        
+        echo "[*] Sandbox is running in MACVLAN mode. Direct network access established."
+    else
+        echo "[+] Configuring Bridged network for PID $container_pid..."
+        
+        # Create bridge if it doesn't exist
+        if ! ip link show "$br_iface" &>/dev/null; then
+            echo "[+] Creating bridge $br_iface for subnet $subnet_prefix/24..."
+            ip link add "$br_iface" type bridge
+            ip link set "$br_iface" up
+        fi
+        
+        # Ensure bridge has the correct IP
+        if ! ip addr show "$br_iface" | grep -q "inet $host_ip/"; then
+            echo "[+] Assigning IP $host_ip to bridge $br_iface..."
+            ip addr add "$host_ip/24" dev "$br_iface"
+        fi
         ip link set "$br_iface" up
+
+        # Disable reverse path filtering to allow local routing without NAT drops
+        for sysctl_path in "/proc/sys/net/ipv4/conf/$br_iface/rp_filter" "/proc/sys/net/ipv4/conf/all/rp_filter"; do
+            if [ -f "$sysctl_path" ]; then
+                echo 0 > "$sysctl_path"
+            fi
+        done
+        
         # Enable proxy_arp on bridge
         if [ -f "/proc/sys/net/ipv4/conf/$br_iface/proxy_arp" ]; then
             echo 1 > "/proc/sys/net/ipv4/conf/$br_iface/proxy_arp"
         fi
+
+        # Enable IP forwarding globally
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null
+
+        ip link add "$host_iface" type veth peer name "$ns_iface"
+        ip link set "$host_iface" master "$br_iface"
+        ip link set "$host_iface" up
+        
+        ip link set "$ns_iface" netns "$container_pid"
+        
+        "$BUSYBOX" nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
+        "$BUSYBOX" nsenter -t "$container_pid" -n ip link set "$ns_iface" up
+        "$BUSYBOX" nsenter -t "$container_pid" -n ip route add default via "$host_ip"
+        
+        # Setup NAT and Forwarding
+        if [ -n "$phys_iface" ]; then
+            echo "[+] Enabling NAT (MASQUERADE) on $phys_iface for $subnet_prefix/24..."
+            iptables -t nat -D POSTROUTING -s "$subnet_prefix/24" -o "$phys_iface" -j MASQUERADE 2>/dev/null || true
+            iptables -t nat -I POSTROUTING 1 -s "$subnet_prefix/24" -o "$phys_iface" -j MASQUERADE
+        else
+            echo "[!] No default physical interface found. Internet access may be limited."
+        fi
+        
+        # Forwarding rules - Force insert at top
+        iptables -D FORWARD -s "$subnet_prefix/24" -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD 1 -s "$subnet_prefix/24" -j ACCEPT
+        
+        iptables -D FORWARD -d "$subnet_prefix/24" -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD 1 -d "$subnet_prefix/24" -j ACCEPT
+        
+        iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD 1 -m state --state RELATED,ESTABLISHED -j ACCEPT
+        
+        # Handle firewalld if active
+        if command -v firewall-cmd &>/dev/null && systemctl is-active firewalld &>/dev/null; then
+            firewall-cmd --zone=trusted --add-interface="$br_iface" >/dev/null 2>&1 || true
+        fi
     fi
 
-    ip link add "$host_iface" type veth peer name "$ns_iface"
-    ip link set "$host_iface" master "$br_iface"
-    ip link set "$host_iface" up
-    ip link set "$ns_iface" netns "$container_pid"
-    
-    "$BUSYBOX" nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
-    "$BUSYBOX" nsenter -t "$container_pid" -n ip link set "$ns_iface" up
-    "$BUSYBOX" nsenter -t "$container_pid" -n ip route add default via "$host_ip"
-    
-    # Setup NAT
-    # Try to find physical interface
-    local phys_iface=$(ip route | grep default | awk '{print $5}' | head -n 1)
-    if [ -n "$phys_iface" ]; then
-        # Check if the MASQUERADE rule already exists for this subnet
-        iptables -t nat -C POSTROUTING -s "$subnet_prefix/24" -o "$phys_iface" -j MASQUERADE 2>/dev/null || \
-        iptables -t nat -A POSTROUTING -s "$subnet_prefix/24" -o "$phys_iface" -j MASQUERADE
-        
-        # Forwarding rules for the bridge
-        iptables -C FORWARD -i "$br_iface" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$br_iface" -j ACCEPT
-        iptables -C FORWARD -o "$br_iface" -j ACCEPT 2>/dev/null || iptables -A FORWARD -o "$br_iface" -j ACCEPT
+    # Handle ufw if active
+    if command -v ufw &>/dev/null && systemctl is-active ufw &>/dev/null; then
+        ufw allow in on "$br_iface" >/dev/null 2>&1 || true
+        ufw allow out on "$br_iface" >/dev/null 2>&1 || true
     fi
     
     echo "[+] Sandbox '$name' is up and running."
@@ -498,6 +560,9 @@ function restore_sandboxes() {
         local start_args=("$name")
         [ -n "$ip" ] && start_args+=("--ip" "$ip")
         [ -n "$gw" ] && start_args+=("--gw" "$gw")
+        if [ -f "$d/mac" ]; then
+            [ "$(cat "$d/mac")" == "1" ] && start_args+=("--mac")
+        fi
 
         if [ -f "$d/start_cmd" ]; then
             mapfile -t cmd < "$d/start_cmd"

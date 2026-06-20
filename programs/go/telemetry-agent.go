@@ -37,7 +37,7 @@ type IPFIXHeader struct {
 }
 
 type Config struct {
-	Mode string `json:"mode"`; Target string `json:"target"`; Port int `json:"port"`; Rate int `json:"rate"`; RateModel string `json:"rate_model"`; Records int `json:"records"`; EngineType uint8 `json:"engine_type"`; EngineID uint8 `json:"engine_id"`; SourceID uint32 `json:"source_id"`; SamplingRate uint32 `json:"sampling_rate"`; Scenarios []FlowScenario `json:"scenarios"`; PcapFile string `json:"pcap_file"`
+	Mode string `json:"mode"`; Target string `json:"target"`; Port int `json:"port"`; Rate int `json:"rate"`; RateModel string `json:"rate_model"`; Records int `json:"records"`; EngineType uint8 `json:"engine_type"`; EngineID uint8 `json:"engine_id"`; SourceID uint32 `json:"source_id"`; SamplingRate uint32 `json:"sampling_rate"`; Scenarios []FlowScenario `json:"scenarios"`; PcapFile string `json:"pcap_file"`; Hostname string `json:"hostname"`
 }
 
 type PcapPacket struct {
@@ -45,21 +45,29 @@ type PcapPacket struct {
 }
 
 func getLocalIP() net.IP {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil { return net.IPv4(127, 0, 0, 1) }
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ip4 := ipnet.IP.To4(); ip4 != nil { return ip4 }
+	for i := 0; i < 10; i++ {
+		addrs, err := net.InterfaceAddrs()
+		if err == nil {
+			for _, address := range addrs {
+				if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+					if ip4 := ipnet.IP.To4(); ip4 != nil { return ip4 }
+				}
+			}
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	return net.IPv4(127, 0, 0, 1)
 }
 
 func getLocalMAC() net.HardwareAddr {
-	ifaces, err := net.Interfaces()
-	if err != nil { return net.HardwareAddr{0, 0, 0, 0, 0, 0} }
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagLoopback == 0 && iface.HardwareAddr != nil { return iface.HardwareAddr }
+	for i := 0; i < 10; i++ {
+		ifaces, err := net.Interfaces()
+		if err == nil {
+			for _, iface := range ifaces {
+				if iface.Flags&net.FlagLoopback == 0 && iface.HardwareAddr != nil { return iface.HardwareAddr }
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	return net.HardwareAddr{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
 }
@@ -313,11 +321,15 @@ func runNetFlowV9(addr string, cfg Config, debug bool) {
 	}
 }
 
-func runSyslog(addr string, cfg Config) {
+func runSyslog(addr string, cfg Config, debug bool) {
 	var conn net.Conn
 	var err error
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	var pcapPkts []PcapPacket; pcapIdx := 0
+	localIP := getLocalIP().String()
+	hostname := cfg.Hostname
+	if hostname == "" { hostname = localIP }
+
 	if cfg.PcapFile != "" {
 		pcapPkts, err = readPcap(cfg.PcapFile)
 		if err != nil { fmt.Printf("[-] Error reading PCAP: %v\n", err); os.Exit(1) }
@@ -333,6 +345,8 @@ func runSyslog(addr string, cfg Config) {
 				time.Sleep(time.Second)
 				continue
 			}
+			localIP = getLocalIP().String()
+			if cfg.Hostname == "" { hostname = localIP }
 		}
 		var event string; var sName string
 		if len(pcapPkts) > 0 {
@@ -342,7 +356,8 @@ func runSyslog(addr string, cfg Config) {
 			s := pickScenario(cfg.Scenarios, rng); _, _, _, _, _ = s.GetRandomFlow(rng)
 			if len(s.Events) > 0 { event = s.Events[rng.Intn(len(s.Events))] } else { event = fmt.Sprintf("TRAFFIC: %s observed", s.Name) }; sName = s.Name
 		}
-		msg := fmt.Sprintf("<134>1 %s sensor-sandbox security-engine %d MSG-01 - %s\n", time.Now().Format(time.RFC3339Nano), os.Getpid(), event)
+		msg := fmt.Sprintf("<134>1 %s %s security-engine %d MSG-01 - %s\n", time.Now().Format(time.RFC3339Nano), hostname, os.Getpid(), event)
+		if debug { fmt.Printf("[DEBUG] Syslog Msg: %s", msg) }
 		_, err := conn.Write([]byte(msg))
 		if err != nil {
 			fmt.Printf("[-] Error sending Syslog: %v\n", err)
@@ -539,11 +554,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  poisson - Exponentially distributed intervals (Poisson arrival process)\n")
 		fmt.Fprintf(os.Stderr, "  bursty  - Mostly quiet, with occasional high-volume bursts\n")
 	}
-	cP := flag.String("config", "", "JSON config file"); modeF := flag.String("mode", "netflow5", "netflow5|netflow9|syslog|ipfix|sflow"); targetF := flag.String("target", "127.0.0.1", "Target IP"); portF := flag.Int("port", 2055, "Target Port"); rateF := flag.Int("rate", 5, "Records per second"); modelF := flag.String("model", "fixed", "fixed|jitter|poisson|bursty"); recordsF := flag.Int("records", 10, "Records per packet"); samplingF := flag.Int("sampling", 100, "sFlow sampling rate (1-in-N)"); debugF := flag.Bool("debug", false, "Enable debug mode"); pcapF := flag.String("pcap", "", "PCAP file to replay"); flag.Parse()
+	cP := flag.String("config", "", "JSON config file"); modeF := flag.String("mode", "netflow5", "netflow5|netflow9|syslog|ipfix|sflow"); targetF := flag.String("target", "127.0.0.1", "Target IP"); portF := flag.Int("port", 2055, "Target Port"); rateF := flag.Int("rate", 5, "Records per second"); modelF := flag.String("model", "fixed", "fixed|jitter|poisson|bursty"); recordsF := flag.Int("records", 10, "Records per packet"); samplingF := flag.Int("sampling", 100, "sFlow sampling rate (1-in-N)"); debugF := flag.Bool("debug", false, "Enable debug mode"); pcapF := flag.String("pcap", "", "PCAP file to replay"); hostF := flag.String("hostname", "", "Hostname/IP for Syslog messages"); flag.Parse()
 	fmt.Printf("[+] Redborder Telemetry Agent %s\n", VERSION)
 
 	// Default configuration
-	cfg := Config{Mode: *modeF, Target: *targetF, Port: *portF, Rate: *rateF, RateModel: *modelF, Records: *recordsF, EngineType: 1, EngineID: 1, SourceID: 1001, SamplingRate: uint32(*samplingF), Scenarios: []FlowScenario{{Name: "default", SrcCIDR: "10.0.0.0/8", DstCIDR: "192.168.0.0/16", SrcPorts: []uint16{1024}, DstPorts: []uint16{80}, Protos: []uint8{6}, Weight: 100}}, PcapFile: *pcapF}
+	cfg := Config{Mode: *modeF, Target: *targetF, Port: *portF, Rate: *rateF, RateModel: *modelF, Records: *recordsF, EngineType: 1, EngineID: 1, SourceID: 1001, SamplingRate: uint32(*samplingF), Scenarios: []FlowScenario{{Name: "default", SrcCIDR: "10.0.0.0/8", DstCIDR: "192.168.0.0/16", SrcPorts: []uint16{1024}, DstPorts: []uint16{80}, Protos: []uint8{6}, Weight: 100}}, PcapFile: *pcapF, Hostname: *hostF}
 
 	// Overwrite with config file if provided
 	if *cP != "" {
@@ -562,6 +577,7 @@ func main() {
 		case "records": cfg.Records = *recordsF
 		case "sampling": cfg.SamplingRate = uint32(*samplingF)
 		case "pcap": cfg.PcapFile = *pcapF
+		case "hostname": cfg.Hostname = *hostF
 		}
 	})
 
@@ -570,7 +586,7 @@ func main() {
 	switch cfg.Mode {
 	case "netflow5": runNetFlowV5(addr, cfg, *debugF)
 	case "netflow9": runNetFlowV9(addr, cfg, *debugF)
-	case "syslog": runSyslog(addr, cfg)
+	case "syslog": runSyslog(addr, cfg, *debugF)
 	case "ipfix": runIPFIX(addr, cfg, *debugF)
 	case "sflow":
 		if cfg.Port == 2055 { cfg.Port = 6343; addr = fmt.Sprintf("%s:%d", cfg.Target, cfg.Port); fmt.Printf("[!] Switching to default sFlow port: %d\n", cfg.Port) }
