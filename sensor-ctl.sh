@@ -169,6 +169,13 @@ function stop_sandbox() {
     [ -n "$id_file" ] && rm -f "$id_file"
     rm -rf "$PERSIST_DIR/$name"
     
+    # Cleanup cgroup
+    local cg_dir="/sys/fs/cgroup/redborder-sensors/$name"
+    if [ -d "$cg_dir" ]; then
+        echo "[+] Removing cgroup $cg_dir..."
+        rmdir "$cg_dir" 2>/dev/null || true
+    fi
+    
     echo "[+] Sandbox '$name' stopped and cleaned up."
 }
 function start_sandbox() {
@@ -309,8 +316,13 @@ function start_sandbox() {
         fi
     done
 
+    # Copy sensor-bbox.sh to a publicly accessible directory to allow execution inside user namespace
+    export HOST_SHARED_DIR="$SCRIPT_DIR/sensor-volume"
+    cp "$SCRIPT_DIR/sensor-bbox.sh" /var/lib/redborder-sensors/bin/sensor-bbox.sh
+    chmod +x /var/lib/redborder-sensors/bin/sensor-bbox.sh
+
     # Launch in background
-    "$SCRIPT_DIR/sensor-bbox.sh" "--name=$name" "${cmd[@]}" > "$STATE_DIR/$name.log" 2>&1 &
+    /var/lib/redborder-sensors/bin/sensor-bbox.sh "--name=$name" "${cmd[@]}" > "$STATE_DIR/$name.log" 2>&1 &
 
     local unshare_pid=$!
     
@@ -335,6 +347,8 @@ function start_sandbox() {
     
     echo "$container_pid" > "$STATE_DIR/$name.pid"
     echo "$container_ip" > "$STATE_DIR/$name.ip"
+    
+
     
     # Save for persistence
     local pdir="$PERSIST_DIR/$name"
