@@ -9,14 +9,7 @@ PERSIST_DIR="/var/lib/redborder-sensors"
 BIN_DIR="$PERSIST_DIR/bin"
 mkdir -p "$STATE_DIR" "$PERSIST_DIR" "$BIN_DIR"
 
-BUSYBOX="$BIN_DIR/busybox"
-BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
 
-if [ ! -f "$BUSYBOX" ]; then
-    echo "[+] Downloading static BusyBox binary to $BIN_DIR..."
-    wget -q "$BUSYBOX_URL" -O "$BUSYBOX"
-    chmod +x "$BUSYBOX"
-fi
 
 # Ensure the script is run as root for most commands
 if [ "$EUID" -ne 0 ] && [ "$1" != "list" ] && [ "$1" != "__complete" ]; then
@@ -384,9 +377,9 @@ function start_sandbox() {
         ip link add "$ns_iface" link "$phys_iface" type macvlan mode bridge
         ip link set "$ns_iface" netns "$container_pid"
         
-        "$BUSYBOX" nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
-        "$BUSYBOX" nsenter -t "$container_pid" -n ip link set "$ns_iface" up
-        "$BUSYBOX" nsenter -t "$container_pid" -n ip route add default via "$host_ip"
+        nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
+        nsenter -t "$container_pid" -n ip link set "$ns_iface" up
+        nsenter -t "$container_pid" -n ip route add default via "$host_ip"
         
         echo "[*] Sandbox is running in MACVLAN mode. Direct network access established."
     else
@@ -427,9 +420,9 @@ function start_sandbox() {
         
         ip link set "$ns_iface" netns "$container_pid"
         
-        "$BUSYBOX" nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
-        "$BUSYBOX" nsenter -t "$container_pid" -n ip link set "$ns_iface" up
-        "$BUSYBOX" nsenter -t "$container_pid" -n ip route add default via "$host_ip"
+        nsenter -t "$container_pid" -n ip addr add "$container_ip/24" dev "$ns_iface"
+        nsenter -t "$container_pid" -n ip link set "$ns_iface" up
+        nsenter -t "$container_pid" -n ip route add default via "$host_ip"
         
         # Setup NAT and Forwarding
         if [ -n "$phys_iface" ]; then
@@ -492,8 +485,70 @@ function enter_shell() {
         exit 1
     fi
     
-    echo "[+] Entering sensor '$name'..."
-    "$BUSYBOX" nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" /bin/sh --login
+    local ip=$(cat "$STATE_DIR/$name.ip" 2>/dev/null || echo "unknown")
+
+    # Build a temporary rcfile with a banner and custom prompt
+    local rcfile
+    rcfile=$(mktemp /tmp/rb-sensor-rc-XXXXXX)
+    cat > "$rcfile" << BANNER
+export PS1='\[\e[1;33m\]redborder-sensor[$name]\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '
+
+echo ""
+echo -e "\e[1;36m╔══════════════════════════════════════════════════════╗\e[0m"
+echo -e "\e[1;36m║       Redborder Sensor Debug Shell                  ║\e[0m"
+echo -e "\e[1;36m╚══════════════════════════════════════════════════════╝\e[0m"
+echo ""
+echo -e "  \e[1mSensor name:\e[0m  $name"
+echo -e "  \e[1mSensor PID:\e[0m   $pid"
+echo -e "  \e[1mSensor IP:\e[0m    $ip"
+echo ""
+echo -e "\e[1;33m  ⚠ DISTROLESS CONTAINER\e[0m"
+echo -e "  You are using the \e[1mHOST filesystem\e[0m."
+echo -e "  The container has no shell or utilities inside."
+echo ""
+echo -e "\e[1;32m  Active namespaces entered:\e[0m"
+echo -e "   -n  Network  →  container IP/routes ($ip)"
+echo -e "   -p  PID      →  container process tree"
+echo -e "   -u  UTS      →  container hostname ($name)"
+echo -e "   -i  IPC      →  container IPC"
+echo -e "   (mount namespace: private, /proc remounted → ps shows only container PIDs)"
+echo ""
+echo -e "\e[1;32m  Running processes inside container:\e[0m"
+ps --ppid "$pid" -o pid,comm,args --no-headers 2>/dev/null | sed 's/^/   /' || echo "   (none visible)"
+echo ""
+echo -e "\e[1;32m  Useful debug commands:\e[0m"
+echo -e "   ip addr              →  show container network interfaces"
+echo -e "   ip route             →  show container routing table"
+echo -e "   ss -tulnp            →  show container listening ports"
+echo -e "   tcpdump -i any       →  capture container traffic"
+echo -e "   ps aux               →  list container processes"
+echo -e "   kill -9 <pid>        →  terminate a container process"
+echo ""
+echo -e "  Type \e[1mexit\e[0m to leave the debug shell."
+echo ""
+BANNER
+
+    # The stored PID is the 'unshare -p' process, which still lives in the HOST PID namespace.
+    # (unshare -p creates a new namespace for its *children*, not itself.)
+    # The actual container PID 1 (tini) is its first child and IS inside the container PID namespace.
+    # We must nsenter -p into tini's PID, otherwise we enter the host PID namespace and
+    # /proc (even if remounted) will show all host processes.
+    local ns_pid
+    ns_pid=$(pgrep -P "$pid" | head -n 1)
+    [ -z "$ns_pid" ] && ns_pid="$pid"
+
+    # Enter container namespaces: -n network, -p PID (via inner tini PID), -u UTS, -i IPC.
+    # No -m: don't enter the container rootfs — host tools (bash, tcpdump, etc.) stay available.
+    # Create a new private mount namespace and remount /proc scoped to the container PID namespace
+    # so that ps/top only show container processes.
+    nsenter -t "$ns_pid" -n -p -u -i \
+        unshare --mount --propagation private \
+        /bin/bash -c "mount -t proc proc /proc && exec /usr/bin/env -i \
+SENSOR_NAME=\"$name\" \
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+TERM=\"$TERM\" \
+/bin/bash --rcfile \"$rcfile\""
+    rm -f "$rcfile"
 }
 
 function exec_command() {
@@ -545,9 +600,15 @@ function exec_command() {
         fi
 
         echo "[+] Running command in background, logging to $STATE_DIR/$name.log"
-        "$BUSYBOX" nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" "${cmd[@]}" >> "$STATE_DIR/$name.log" 2>&1 &
+        # No -m: binary is resolved from HOST filesystem (e.g. /sensor-data/ bind-mounted path)
+        # -n/-p/-u/-i: inject into container namespaces without entering its stripped rootfs
+        nsenter -t "$pid" -n -p -u -i \
+            /usr/bin/env -i SENSOR_NAME="$name" PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM="$TERM" \
+            "${cmd[@]}" >> "$STATE_DIR/$name.log" 2>&1 &
     else
-        "$BUSYBOX" nsenter -t "$pid" -m -u -i -n -p /bin/env -i SENSOR_NAME="$name" PATH=/bin:/sbin TERM="$TERM" "${cmd[@]}"
+        nsenter -t "$pid" -n -p -u -i \
+            /usr/bin/env -i SENSOR_NAME="$name" PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM="$TERM" \
+            "${cmd[@]}"
     fi
 }
 

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -15,6 +16,16 @@ void forward_signal(int sig) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
+        fprintf(stderr, "Usage: %s <command> [args...]\n", argv[0]);
+        return 1;
+    }
+
+    // Skip optional '--' separator (e.g. tini -- /bin/agent args)
+    int cmd_start = 1;
+    if (argc > 1 && strcmp(argv[1], "--") == 0) {
+        cmd_start = 2;
+    }
+    if (cmd_start >= argc) {
         fprintf(stderr, "Usage: %s <command> [args...]\n", argv[0]);
         return 1;
     }
@@ -43,7 +54,7 @@ int main(int argc, char *argv[]) {
         }
         
         // Execute the target program
-        execvp(argv[1], &argv[1]);
+        execvp(argv[cmd_start], &argv[cmd_start]);
         perror("execvp");
         return 127;
     }

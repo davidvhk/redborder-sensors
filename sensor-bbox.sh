@@ -33,10 +33,8 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 CONTAINER_DIR="/tmp/redborder-sensor-$NAME"
 HOST_SHARED_DIR="${HOST_SHARED_DIR:-$SCRIPT_DIR/sensor-volume}" 
 DNS="1.1.1.1"
-BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
 BIN_DIR="/var/lib/redborder-sensors/bin"
 mkdir -p "$BIN_DIR"
-BUSYBOX="$BIN_DIR/busybox"
 
 # 1. Ensure the script is run as root (in parent process)
 if [ "$INSIDE_USER_NS" -eq 0 ] && [ "$EUID" -ne 0 ]; then
@@ -49,26 +47,34 @@ fi
 # =====================================================================
 if [ "$INSIDE_USER_NS" -eq 1 ]; then
     cd "$CONTAINER_DIR"
-    export PATH=/bin:/sbin
+    # NOTE: Do NOT restrict PATH here. setpriv and chroot are host tools and
+    # must be resolved via the host's PATH. We are still on the host filesystem
+    # at this point — the chroot hasn't happened yet.
 
-    INIT_CMD=""
-    if [ -f "./bin/tini" ]; then
-        INIT_CMD="/bin/tini"
+    # tini is mandatory - it is the only binary that should be in /bin beside the agent
+    if [ ! -f "./bin/tini" ]; then
+        echo "[-] FATAL: tini not found in container /bin. Cannot start PID 1."
+        exit 1
     fi
 
     if [ $# -gt 0 ]; then
-        echo "[+] Executing command: $@"
-        if [ -n "$INIT_CMD" ]; then
-            exec "$BUSYBOX" setpriv --no-new-privs "$BUSYBOX" chroot . "$INIT_CMD" env SENSOR_NAME="$NAME" "$@"
-        else
-            exec "$BUSYBOX" setpriv --no-new-privs "$BUSYBOX" chroot . env SENSOR_NAME="$NAME" "$@"
-        fi
+        echo "[+] Executing (distroless): tini -> $@"
+        # Export SENSOR_NAME so it is inherited by the chroot'd process.
+        # We cannot use 'env' inside the chroot since the container has no env binary.
+        export SENSOR_NAME="$NAME"
+        # chroot(2) requires CAP_SYS_CHROOT — so we drop all caps *except* that one before
+        # pivoting into the distroless rootfs. After the chroot, CAP_SYS_CHROOT is harmless:
+        # the rootfs is a read-only tmpfs with only tini + the agent; there is nothing left
+        # to pivot into. --no-new-privs is inherited and prevents any re-escalation.
+        exec setpriv --no-new-privs \
+            --inh-caps=-all \
+            --bounding-set=-all,+sys_chroot \
+            chroot . /bin/tini -- \
+            "$@"
     else
-        if [ -n "$INIT_CMD" ]; then
-            exec "$BUSYBOX" setpriv --no-new-privs "$BUSYBOX" chroot . "$INIT_CMD" env SENSOR_NAME="$NAME" /bin/sh --login
-        else
-            exec "$BUSYBOX" setpriv --no-new-privs "$BUSYBOX" chroot . env SENSOR_NAME="$NAME" /bin/sh --login
-        fi
+        echo "[-] No command specified. This is a distroless container with no shell."
+        echo "    Debug by running: sudo nsenter -t <PID> -n -p -u -i /bin/bash"
+        exit 1
     fi
     exit 0
 fi
@@ -82,13 +88,6 @@ if [ ! -d "$HOST_SHARED_DIR" ]; then
     echo "[+] Creating shared directory on host: $HOST_SHARED_DIR"
     mkdir -p "$HOST_SHARED_DIR"
     chmod 777 "$HOST_SHARED_DIR"
-fi
-
-# Stage the BusyBox binary on the host if not already present
-if [ ! -f "$BUSYBOX" ]; then
-    echo "[+] Downloading static BusyBox binary..."
-    wget -q "$BUSYBOX_URL" -O "$BUSYBOX"
-    chmod +x "$BUSYBOX"
 fi
 
 # Setup cgroup resource limits on the host (run as host root before unsharing namespaces)
@@ -113,10 +112,10 @@ if [ "$INSIDE_NS" -eq 0 ] && [ "$INSIDE_USER_NS" -eq 0 ]; then
     fi
 fi
 
-# Phase 1: Unshare mount, network, UTS, IPC, cgroup namespaces
+# Phase 1: Unshare mount, network, UTS, IPC, cgroup, and time namespaces
 if [ "$INSIDE_NS" -eq 0 ]; then
-    echo "[+] Spawning isolated Mount, Network, UTS, IPC, and Cgroup namespaces for '$NAME'..."
-    exec unshare -C -m -n -u -i -f "$0" --inside-ns --name="$NAME" "$@"
+    echo "[+] Spawning isolated Mount, Network, UTS, IPC, Cgroup, and Time namespaces for '$NAME'..."
+    exec unshare -C -m -n -u -i -T -f "$0" --inside-ns --name="$NAME" "$@"
 fi
 
 # Phase 2: Setup Container Directory Layout & Mounts (Inside Mount/Network/UTS/IPC/Cgroup Netns)
@@ -128,25 +127,20 @@ mkdir -p "$CONTAINER_DIR"
 mount -t tmpfs -o nosuid,nodev none "$CONTAINER_DIR"
 /bin/mount --make-private "$CONTAINER_DIR"
 
-# Create minimal directory layout
-mkdir -p "$CONTAINER_DIR"/{bin,sbin,proc,sys,dev,root,old_root,sensor-data}
+# Create minimal directory layout - no shell, no utilities (distroless)
+mkdir -p "$CONTAINER_DIR"/{bin,proc,sys,dev,root,old_root,sensor-data,etc}
 
-# Copy the staged busybox into the container root
-cp "$BUSYBOX" "$CONTAINER_DIR/bin/busybox"
-
-# Copy the tini binary into the container root
+# Copy tini as the only binary in the container (PID 1 init)
+# The Go agent binary will be copied in from /sensor-data before exec
 if [ -f "$HOST_SHARED_DIR/tini" ]; then
-    echo "[+] Copying tini binary into container root..."
+    echo "[+] Copying tini (PID 1) into container root..."
     cp "$HOST_SHARED_DIR/tini" "$CONTAINER_DIR/bin/tini"
     chmod +x "$CONTAINER_DIR/bin/tini"
+else
+    echo "[-] ERROR: tini binary not found in $HOST_SHARED_DIR. Run 'make' first."
+    exit 1
 fi
 
-echo "[+] Populating container with relative BusyBox symlinks..."
-cd "$CONTAINER_DIR/bin"
-for cmd in $(./busybox --list); do
-    ln -sf busybox "$cmd"
-done
-cd "$CONTAINER_DIR"
 
 echo "[+] Mounting isolated kernel filesystems..."
 # Mount proc and sysfs read-only directly!
@@ -188,7 +182,7 @@ mkdir -p "$CONTAINER_DIR/etc"
 echo "nameserver ${DNS}" > "$CONTAINER_DIR/etc/resolv.conf"
 
 echo "[+] Bringing up the loopback network interface..."
-"$BUSYBOX" ip link set lo up
+ip link set lo up
 
 echo "[+] Allowing unprivileged port binding..."
 if [ -f "/proc/sys/net/ipv4/ip_unprivileged_port_start" ]; then
@@ -196,34 +190,18 @@ if [ -f "/proc/sys/net/ipv4/ip_unprivileged_port_start" ]; then
 fi
 
 echo "[+] Setting hostname to '$NAME'..."
-"$BUSYBOX" hostname "$NAME"
+hostname "$NAME"
 
 # Wait for network plumbing (veth-ns)
 # Wait up to 5 seconds for the host to configure the network
-for i in $("$BUSYBOX" seq 1 50); do
-    if "$BUSYBOX" ip addr show veth-ns 2>/dev/null | "$BUSYBOX" grep -q "inet "; then
+for i in $(seq 1 50); do
+    if ip addr show veth-ns 2>/dev/null | grep -q "inet "; then
         break
     fi
-    "$BUSYBOX" sleep 0.1
+    sleep 0.1
 done
 
-# Create a nice prompt and greeting in /etc/profile inside the container root
-cat <<'EOF' > "$CONTAINER_DIR/etc/profile"
-export PATH=/bin:/sbin
-export PS1='redborder-sensor:[\w]# '
-
-echo -e "\n===================================================="
-echo " Welcome to your redborder sensor!"
-echo "----------------------------------------------------"
-echo " - Isolated: Network, PID, Mounts"
-echo " - Binaries: Check '/bin' and '/sbin'"
-echo " - Shared:   '/sensor-data' (maps to host sensor-volume/)"
-echo "----------------------------------------------------"
-echo " To run the telemetry agent:"
-echo " # /sensor-data/telemetry-agent -mode syslog"
-echo "===================================================="
-echo ""
-EOF
+# No /etc/profile needed — distroless container has no shell to read it
 
 # Detect and handle binaries running from /sensor-data
 # If the command starts with /sensor-data/, copy it to /bin inside container to allow mounting /sensor-data as noexec
@@ -261,9 +239,9 @@ echo "[+] Remounting root filesystem read-only..."
 mount -o remount,ro "$CONTAINER_DIR" 2>/dev/null || echo "[!] Warning: Failed to remount root filesystem read-only. Continuing..."
 
 # Transition to Phase 3:
-# 1. chpst switches to the target unprivileged UID/GID on the host
+# 1. setpriv drops to the target unprivileged UID/GID (replaces BusyBox chpst)
 # 2. unshare creates a new user, mount, and PID namespace (mapping unprivileged host user to container root)
-# 3. Executes /var/lib/redborder-sensors/bin/sensor-bbox.sh with --inside-user-ns flag
-exec "$BUSYBOX" chpst -u "$target_uid:$target_gid" \
-    "$BUSYBOX" unshare -m -p -f -U -r \
+# 3. Executes sensor-bbox.sh with --inside-user-ns flag
+exec setpriv --reuid="$target_uid" --regid="$target_gid" --clear-groups \
+    unshare -m -p -f -U -r \
     /var/lib/redborder-sensors/bin/sensor-bbox.sh --inside-user-ns --inside-ns --name="$NAME" "$@"
