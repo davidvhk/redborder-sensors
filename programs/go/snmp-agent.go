@@ -90,6 +90,32 @@ func loadConfig(path string) error {
 	return nil
 }
 
+// encodeBERInt encodes an unsigned integer as standard ASN.1 BER with the specified SNMP tag
+func encodeBERInt(tag byte, val uint64) asn1.RawValue {
+	var b []byte
+	temp := val
+	for {
+		b = append([]byte{byte(temp & 0xFF)}, b...)
+		temp >>= 8
+		if temp == 0 {
+			break
+		}
+	}
+	// If MSB is set, prepend 0x00 to preserve positive unsigned value in ASN.1 BER
+	if b[0]&0x80 != 0 {
+		b = append([]byte{0x00}, b...)
+	}
+	var full []byte
+	full = append(full, tag)
+	if len(b) < 128 {
+		full = append(full, byte(len(b)))
+	} else {
+		full = append(full, 0x81, byte(len(b)))
+	}
+	full = append(full, b...)
+	return asn1.RawValue{FullBytes: full}
+}
+
 func getOIDValue(oid asn1.ObjectIdentifier) (asn1.RawValue, bool) {
 	oc, found := oidMap[oid.String()]
 	if !found { return asn1.RawValue{}, false }
@@ -106,33 +132,36 @@ func getOIDValue(oid asn1.ObjectIdentifier) (asn1.RawValue, bool) {
 	case "string":
 		val, _ := asn1.Marshal([]byte(oc.Value))
 		return asn1.RawValue{FullBytes: val}, true
+	case "mac", "hex_string":
+		hw, err := net.ParseMAC(oc.Value)
+		if err == nil {
+			val, _ := asn1.Marshal([]byte(hw))
+			return asn1.RawValue{FullBytes: val}, true
+		}
+		val, _ := asn1.Marshal([]byte(oc.Value))
+		return asn1.RawValue{FullBytes: val}, true
 	case "integer":
 		var v int
 		fmt.Sscanf(oc.Value, "%d", &v)
 		val, _ := asn1.Marshal(v)
 		return asn1.RawValue{FullBytes: val}, true
 	case "gauge32":
-		var v uint32
+		var v uint64
 		if oc.Value != "" {
 			fmt.Sscanf(oc.Value, "%d", &v)
 		} else if oc.Min > 0 || oc.Max > 0 {
-			v = uint32(randRange(oc.Min, oc.Max, 0, 100))
+			v = uint64(randRange(oc.Min, oc.Max, 0, 100))
 		}
-		val, _ := asn1.Marshal(v)
-		if len(val) > 0 { val[0] = 0x42 }
-		return asn1.RawValue{FullBytes: val}, true
+		return encodeBERInt(0x42, v), true
 	case "counter32":
-		var initVal uint32
+		var initVal uint64
 		if oc.Value != "" { fmt.Sscanf(oc.Value, "%d", &initVal) }
 		elapsed := time.Since(startTime).Seconds()
 		rate := oc.Rate
 		if rate <= 0 { rate = 100000 }
-		// Dynamic increasing counter with minor jitter
 		jitter := rand.Intn(rate/20 + 1)
-		currentVal := initVal + uint32(elapsed*float64(rate)) + uint32(jitter)
-		val, _ := asn1.Marshal(currentVal)
-		if len(val) > 0 { val[0] = 0x41 }
-		return asn1.RawValue{FullBytes: val}, true
+		currentVal := (initVal + uint64(elapsed*float64(rate)) + uint64(jitter)) & 0xFFFFFFFF
+		return encodeBERInt(0x41, currentVal), true
 	case "counter64":
 		var initVal uint64
 		if oc.Value != "" { fmt.Sscanf(oc.Value, "%d", &initVal) }
@@ -141,14 +170,10 @@ func getOIDValue(oid asn1.ObjectIdentifier) (asn1.RawValue, bool) {
 		if rate <= 0 { rate = 1000000 }
 		jitter := rand.Intn(rate/20 + 1)
 		currentVal := initVal + uint64(elapsed*float64(rate)) + uint64(jitter)
-		val, _ := asn1.Marshal(currentVal)
-		if len(val) > 0 { val[0] = 0x46 }
-		return asn1.RawValue{FullBytes: val}, true
+		return encodeBERInt(0x46, currentVal), true
 	case "timeticks":
-		uptime := uint32(time.Since(startTime).Milliseconds() / 10)
-		val, _ := asn1.Marshal(uptime)
-		if len(val) > 0 { val[0] = 0x43 } else { val = []byte{0x43, 0x01, 0x00} }
-		return asn1.RawValue{FullBytes: val}, true
+		uptime := uint64(time.Since(startTime).Milliseconds() / 10)
+		return encodeBERInt(0x43, uptime), true
 	case "oid":
 		target := parseOID(oc.Value)
 		val, _ := asn1.Marshal(target)
