@@ -45,11 +45,11 @@ jobs:
 
       - name: Verify static linking
         run: |
-          ldd sensor-volume/telemetry-agent 2>&1 | grep "not a dynamic executable"
-          ldd sensor-volume/ips-agent 2>&1 | grep "not a dynamic executable"
+          ldd dist/telemetry-agent 2>&1 | grep "not a dynamic executable"
+          ldd dist/ips-agent 2>&1 | grep "not a dynamic executable"
 
       - name: Upload binary artifacts
         uses: actions/upload-artifact@v4
         with:
           name: redborder-sensor-binaries
-          path: sensor-volume/
+          path: dist/

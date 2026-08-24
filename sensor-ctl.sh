@@ -223,6 +223,30 @@ function start_sandbox() {
 
     local cmd=("$@")
 
+    # If no command provided, check persistence or auto-detect from name
+    if [ ${#cmd[@]} -eq 0 ]; then
+        if [ -f "$PERSIST_DIR/$name/start_cmd" ]; then
+            mapfile -t cmd < "$PERSIST_DIR/$name/start_cmd"
+            echo "[+] Restored command for '$name' from persistent state: ${cmd[*]}"
+        else
+            # Try to deduce type from name (e.g. snmp1 -> snmp, ips2 -> ips)
+            local guessed_type
+            guessed_type=$(echo "$name" | sed -E 's/[0-9_-]+$//')
+            case "$guessed_type" in
+                ips|snmp|ipmi|redfish|webproxy|telemetry|sflow|webserver|proxy)
+                    echo "[+] Auto-detected sensor type '$guessed_type' from name '$name'"
+                    cmd=("$guessed_type")
+                    ;;
+                *)
+                    echo "[-] Error: No command or agent type specified for sensor '$name'."
+                    echo "Usage: $0 start <name> [--ip <ip>] [--gw <gw>] [type|command]"
+                    echo "Types: ips, snmp, ipmi, redfish, webproxy, telemetry, sflow, webserver, proxy"
+                    exit 1
+                    ;;
+            esac
+        fi
+    fi
+
     # Check name length (veth- prefix + name must be <= 15 chars)
     if [ ${#name} -gt 10 ]; then
         echo "[-] Error: Sandbox name '$name' is too long (${#name} chars). Max 10 characters allowed."
@@ -272,50 +296,62 @@ function start_sandbox() {
     if [ ${#cmd[@]} -gt 0 ]; then
         case "${cmd[0]}" in
             ips)
-                cmd=("/sensor-data/ips-agent" "-config" "/sensor-data/config-ips.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/ips-agent" "-config" "$SCRIPT_DIR/configs/ips/config.json" "--state" "/var/state/ips-state.json" "${cmd[@]:1}")
                 ;;
             snmp)
-                cmd=("/sensor-data/snmp-agent" "-config" "/sensor-data/config-snmp.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/snmp-agent" "-config" "$SCRIPT_DIR/configs/snmp/config.json" "${cmd[@]:1}")
                 ;;
             ipmi)
-                cmd=("/sensor-data/ipmi-agent" "-config" "/sensor-data/config-ipmi.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/ipmi-agent" "-config" "$SCRIPT_DIR/configs/ipmi/config.json" "${cmd[@]:1}")
                 ;;
             redfish)
-                cmd=("/sensor-data/redfish-agent" "-config" "/sensor-data/config-redfish.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/redfish-agent" "-config" "$SCRIPT_DIR/configs/redfish/config.json" "${cmd[@]:1}")
                 ;;
             webproxy)
-                cmd=("/sensor-data/webproxy-agent" "-config" "/sensor-data/config-webproxy-anon.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/webproxy-agent" "-config" "$SCRIPT_DIR/configs/webproxy/config.json" "${cmd[@]:1}")
                 ;;
             telemetry)
-                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/telemetry-agent" "-config" "$SCRIPT_DIR/configs/telemetry/config.json" "${cmd[@]:1}")
                 ;;
             sflow)
-                cmd=("/sensor-data/telemetry-agent" "-config" "/sensor-data/config-sflow.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/telemetry-agent" "-config" "$SCRIPT_DIR/configs/sflow/config.json" "${cmd[@]:1}")
                 ;;
             webserver)
-                cmd=("/sensor-data/webserver" "-config" "/sensor-data/config-webserver.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/webserver" "-config" "$SCRIPT_DIR/configs/webserver/config.json" "${cmd[@]:1}")
                 ;;
             proxy)
-                cmd=("/sensor-data/proxy" "-config" "/sensor-data/config-proxy.json" "${cmd[@]:1}")
+                cmd=("/sensor-data/proxy-agent" "-config" "$SCRIPT_DIR/configs/proxy/config.json" "${cmd[@]:1}")
                 ;;
         esac
     fi
 
-    # Smart path resolution for all arguments
+    # Smart path resolution for all arguments:
+    # - relative path in current working directory -> absolute path
+    # - relative path in project root -> absolute path
+    # - relative path in configs/ -> absolute path
+    # - relative binary name in dist/ -> /sensor-data/<name>
     for i in "${!cmd[@]}"; do
-        # If it's not an absolute path, try to find it in /sensor-data
-        if [[ "${cmd[$i]}" != /* ]] && [ -f "$SCRIPT_DIR/sensor-volume/${cmd[$i]}" ]; then
-            cmd[$i]="/sensor-data/${cmd[$i]}"
+        if [[ "${cmd[$i]}" != /* ]]; then
+            if [ -f "$PWD/${cmd[$i]}" ]; then
+                cmd[$i]="$(realpath "$PWD/${cmd[$i]}")"
+            elif [ -f "$SCRIPT_DIR/${cmd[$i]}" ]; then
+                cmd[$i]="$(realpath "$SCRIPT_DIR/${cmd[$i]}")"
+            elif [ -f "$SCRIPT_DIR/configs/${cmd[$i]}" ]; then
+                cmd[$i]="$(realpath "$SCRIPT_DIR/configs/${cmd[$i]}")"
+            elif [ -f "$SCRIPT_DIR/dist/${cmd[$i]}" ]; then
+                cmd[$i]="/sensor-data/${cmd[$i]}"
+            fi
         fi
     done
 
-    # Copy sensor-bbox.sh to a publicly accessible directory to allow execution inside user namespace
-    export HOST_SHARED_DIR="$SCRIPT_DIR/sensor-volume"
-    cp "$SCRIPT_DIR/sensor-bbox.sh" /var/lib/redborder-sensors/bin/sensor-bbox.sh
-    chmod +x /var/lib/redborder-sensors/bin/sensor-bbox.sh
+    # Copy sensor to a publicly accessible directory to allow execution inside user namespace
+    export HOST_SHARED_DIR="$SCRIPT_DIR/dist"
+    export HOST_CONFIGS_DIR="$SCRIPT_DIR/configs"
+    cp "$SCRIPT_DIR/sensor" /var/lib/redborder-sensors/bin/sensor
+    chmod +x /var/lib/redborder-sensors/bin/sensor
 
     # Launch in background
-    /var/lib/redborder-sensors/bin/sensor-bbox.sh "--name=$name" "${cmd[@]}" > "$STATE_DIR/$name.log" 2>&1 &
+    /var/lib/redborder-sensors/bin/sensor "--name=$name" "${cmd[@]}" > "$STATE_DIR/$name.log" 2>&1 &
 
     local unshare_pid=$!
     
@@ -658,6 +694,47 @@ function restore_sandboxes() {
     done
 }
 
+function show_config() {
+    local name=$1
+    if [ -z "$name" ]; then
+        echo "Usage: $0 config <name>"
+        exit 1
+    fi
+
+    local pid_file="$STATE_DIR/$name.pid"
+    if [ ! -f "$pid_file" ]; then
+        echo "[-] Sensor '$name' is not running (no PID file)."
+        exit 1
+    fi
+
+    local pid
+    pid=$(cat "$pid_file")
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        echo "[-] Sensor '$name' is not running (stale PID $pid)."
+        exit 1
+    fi
+
+    # Locate the inner process inside the chroot
+    local inner_pid
+    inner_pid=$(pgrep -P "$pid" | head -n 1)
+    [ -z "$inner_pid" ] && inner_pid="$pid"
+
+    local config_dir="/proc/$inner_pid/root/configs"
+    if [ ! -d "$config_dir" ]; then
+        echo "[-] No staged config found for '$name' in container."
+        exit 1
+    fi
+
+    echo "[+] Staged config files for '$name' (read from container tmpfs):"
+    echo ""
+    while IFS= read -r f; do
+        rel="${f#$config_dir/}"
+        echo -e "\e[1;36m=== $rel ===\e[0m"
+        cat "$f"
+        echo ""
+    done < <(find "$config_dir" -type f | sort)
+}
+
 case "$1" in
     start)
         shift
@@ -688,11 +765,15 @@ case "$1" in
         shift
         enter_shell "$@"
         ;;
+    config)
+        shift
+        show_config "$@"
+        ;;
     __complete)
         # Hidden command for bash completion
         case "$2" in
             commands)
-                echo "start stop list stats logs exec shell restore"
+                echo "start stop list stats logs exec shell config restore"
                 ;;
             types)
                 echo "ips snmp ipmi redfish webproxy telemetry sflow webserver"
@@ -706,12 +787,12 @@ case "$1" in
         esac
         ;;
     *)
-        echo "Usage: $0 {start|stop|list|stats|logs|exec|shell|restore} [name]"
+        echo "Usage: $0 {start|stop|list|stats|logs|exec|shell|config|restore} [name]"
         echo ""
         echo "Commands:"
         echo "  start <name> [--ip <ip>] [--gw <gw>] [command|type]  Start a new sensor"
         echo "    Types: ips, snmp, ipmi, redfish, webproxy, telemetry, sflow, webserver"
-        echo "    Note: Filenames in sensor-volume/ are automatically resolved to /sensor-data/"
+        echo "    Note: Binaries in dist/ and configs in configs/<type>/ are resolved automatically"
         echo "  stop <name>                                          Stop a running sensor"
         echo "  restore                                              Restore all sensors from persistent config"
         echo "  list                                                 List all sensors"
@@ -719,6 +800,7 @@ case "$1" in
         echo "  logs <name> [-f]                                     Show sensor logs (-f to follow)"
         echo "  exec <name> [-d] <command>                           Run a command in a running sensor (-d for background)"
         echo "  shell <name>                                         Enter sensor shell"
+        echo "  config <name>                                        Show staged config files inside the container"
         exit 1
         ;;
 esac

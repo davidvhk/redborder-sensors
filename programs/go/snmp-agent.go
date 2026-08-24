@@ -38,10 +38,11 @@ type VarBind struct {
 
 type OIDConfig struct {
 	OID   string `json:"oid"`
-	Type  string `json:"type"` // string, integer, timeticks, oid, cpu, mem_free, mem_used
+	Type  string `json:"type"` // string, integer, timeticks, oid, cpu, mem_free, mem_used, counter32, counter64, gauge32
 	Value string `json:"value,omitempty"`
 	Min   int    `json:"min,omitempty"`
 	Max   int    `json:"max,omitempty"`
+	Rate  int    `json:"rate,omitempty"` // bytes or packets per second for counters
 }
 
 type Config struct {
@@ -109,6 +110,39 @@ func getOIDValue(oid asn1.ObjectIdentifier) (asn1.RawValue, bool) {
 		var v int
 		fmt.Sscanf(oc.Value, "%d", &v)
 		val, _ := asn1.Marshal(v)
+		return asn1.RawValue{FullBytes: val}, true
+	case "gauge32":
+		var v uint32
+		if oc.Value != "" {
+			fmt.Sscanf(oc.Value, "%d", &v)
+		} else if oc.Min > 0 || oc.Max > 0 {
+			v = uint32(randRange(oc.Min, oc.Max, 0, 100))
+		}
+		val, _ := asn1.Marshal(v)
+		if len(val) > 0 { val[0] = 0x42 }
+		return asn1.RawValue{FullBytes: val}, true
+	case "counter32":
+		var initVal uint32
+		if oc.Value != "" { fmt.Sscanf(oc.Value, "%d", &initVal) }
+		elapsed := time.Since(startTime).Seconds()
+		rate := oc.Rate
+		if rate <= 0 { rate = 100000 }
+		// Dynamic increasing counter with minor jitter
+		jitter := rand.Intn(rate/20 + 1)
+		currentVal := initVal + uint32(elapsed*float64(rate)) + uint32(jitter)
+		val, _ := asn1.Marshal(currentVal)
+		if len(val) > 0 { val[0] = 0x41 }
+		return asn1.RawValue{FullBytes: val}, true
+	case "counter64":
+		var initVal uint64
+		if oc.Value != "" { fmt.Sscanf(oc.Value, "%d", &initVal) }
+		elapsed := time.Since(startTime).Seconds()
+		rate := oc.Rate
+		if rate <= 0 { rate = 1000000 }
+		jitter := rand.Intn(rate/20 + 1)
+		currentVal := initVal + uint64(elapsed*float64(rate)) + uint64(jitter)
+		val, _ := asn1.Marshal(currentVal)
+		if len(val) > 0 { val[0] = 0x46 }
 		return asn1.RawValue{FullBytes: val}, true
 	case "timeticks":
 		uptime := uint32(time.Since(startTime).Milliseconds() / 10)
