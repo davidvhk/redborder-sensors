@@ -30,7 +30,7 @@ _sensor_ctl_completion() {
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             fi
             ;;
-        stop|logs|exec|shell)
+        stop|logs|exec|shell|config)
             # Suggest running sandboxes
             if [[ ${COMP_CWORD} -eq 2 ]]; then
                 opts=$($script __complete running)

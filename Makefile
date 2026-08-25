@@ -1,9 +1,9 @@
 # Build system for redborder sensor programs
 # Targets:
-#   all: Builds all programs and installs them to sensor-volume/
-#   clean: Removes built binaries from sensor-volume/
+#   all: Builds all programs and installs them to dist/
+#   clean: Removes built binaries from dist/
 
-INSTALL_DIR = sensor-volume
+INSTALL_DIR = dist
 
 # Go programs
 GO_FILES = $(wildcard programs/go/*.go)

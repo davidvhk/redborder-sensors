@@ -1,7 +1,7 @@
 %define debug_package %{nil}
 
 Name:           redborder-sensors
-Version:        0.0.9
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        Lightweight sensor sandbox for redborder
 
@@ -41,10 +41,11 @@ mkdir -p %{buildroot}%{_sysconfdir}/bash_completion.d
 
 install -m 755 sensor-ctl.sh %{buildroot}%{_libexecdir}/%{name}/
 install -m 755 sensor-chaos.sh %{buildroot}%{_libexecdir}/%{name}/
-install -m 755 sensor-bbox.sh %{buildroot}%{_libexecdir}/%{name}/
+install -m 755 sensor %{buildroot}%{_libexecdir}/%{name}/
 install -m 644 redborder-sensors.service %{buildroot}%{_unitdir}/
 install -m 644 sensor-ctl-completion.bash %{buildroot}%{_sysconfdir}/bash_completion.d/sensor-ctl
-cp -r sensor-volume %{buildroot}%{_libexecdir}/%{name}/
+cp -r dist %{buildroot}%{_libexecdir}/%{name}/
+cp -r configs %{buildroot}%{_libexecdir}/%{name}/
 
 ln -s %{_libexecdir}/%{name}/sensor-ctl.sh %{buildroot}%{_bindir}/sensor-ctl
 ln -s %{_libexecdir}/%{name}/sensor-chaos.sh %{buildroot}%{_bindir}/sensor-chaos

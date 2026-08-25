@@ -1,16 +1,10 @@
 # Binaries
-sensor-volume/telemetry-agent
-sensor-volume/ips-agent
-sensor-volume/snmp-agent
-sensor-volume/ipmi-agent
-sensor-volume/server
-sensor-volume/example
+dist/
 
 # Logs and State
 /tmp/redborder-sensors/
 /tmp/redborder-sensor-*
-sensor-volume/ips-state-*.json
-sensor-volume/ips-state.json
+/var/lib/redborder-sensors/
 wget-log
 
 # RPM Build

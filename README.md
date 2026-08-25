@@ -168,15 +168,26 @@ The framework uses a **Bridge-per-Subnet** model:
 - Outbound traffic is NAT'd through the host's default interface.
 - Standard gateway IPs are assigned to bridges to ensure compatibility with automation tools.
 
-## Advanced Features
+## Security & Hardening
 
-### Multi-Instance Isolation
-Each sensor instance has its own identity. The framework exports the `SENSOR_NAME` environment variable, allowing agents to isolate their state files (e.g., `ips-state-ips1.json`) within the shared volume.
+The sandbox environment is audited and hardened using [nspect](https://github.com/davidvhk/nspect). The security context of the containers enforces:
+
+* **Lightweight Init System**: Sandboxes use a compiled static [tini](file:///home/david/projects/redborder-sensors/programs/c/tini.c) entrypoint as PID 1 to reap zombie processes and forward termination signals.
+* **NoNewPrivileges (NNP)**: Enforced via `setpriv --no-new-privs` on the container's init parent call, preventing any privilege escalation via SUID binaries or capabilities inside the sandbox.
+* **Mount Hardening**:
+  * The shared `/sensor-data` volume is mounted with the `noexec` flag (along with `nosuid,nodev,nosymfollow`). To allow execution, agent binaries are dynamically staged in `/bin` on startup by [sensor-bbox.sh](file:///home/david/projects/redborder-sensors/sensor-bbox.sh).
+  * The root filesystem is remounted read-only (`ro`) on supported hosts, with graceful fallbacks for nested container/LXC/AppArmor profiles.
+  * Device files (`/dev/null`, `/dev/tty`, `/dev/urandom`, `/dev/random`) are isolated inside a custom `/dev` `tmpfs` where supported, avoiding host `devtmpfs` leaks.
 
 ## Requirements
 - Linux kernel with Namespace support (`CONFIG_NAMESPACES`).
 - `iproute2`, `iptables`, `util-linux`, `wget`.
 - Go (for building agents).
+
+## Advanced Features
+
+### Multi-Instance Isolation
+Each sensor instance has its own identity. The framework exports the `SENSOR_NAME` environment variable, allowing agents to isolate their state files (e.g., `ips-state-ips1.json`) within the shared volume.
 
 ### Automated Build
 The project includes CI/CD configurations for both **GitHub Actions** and **GitLab CI** (see below) that automatically build the RPM on every push to the `main` branch or when a new tag is created.

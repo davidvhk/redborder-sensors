@@ -26,9 +26,9 @@ test_binaries:
   script:
     - make
     # Basic verification that binaries are static and functional
-    - ldd sensor-volume/telemetry-agent 2>&1 | grep "not a dynamic executable"
-    - ldd sensor-volume/ips-agent 2>&1 | grep "not a dynamic executable"
+    - ldd dist/telemetry-agent 2>&1 | grep "not a dynamic executable"
+    - ldd dist/ips-agent 2>&1 | grep "not a dynamic executable"
   artifacts:
     paths:
-      - sensor-volume/
+      - dist/
     expire_in: 1 day
