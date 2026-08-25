@@ -598,11 +598,56 @@ function exec_command() {
     fi
     
     local cmd=("$@")
-    
     if [ -z "$name" ] || [ ${#cmd[@]} -eq 0 ]; then
-        echo "Usage: $0 exec <name> [-d] <command> [args...]"
+        echo "Usage: $0 exec <name> [-d] [type|command] [args...]"
         exit 1
     fi
+
+    # Shorthand resolution for exec
+    case "${cmd[0]}" in
+        ips)
+            cmd=("$SCRIPT_DIR/dist/ips-agent" "-config" "$SCRIPT_DIR/configs/ips/config.json" "--state" "/var/state/ips-state.json" "${cmd[@]:1}")
+            ;;
+        snmp)
+            cmd=("$SCRIPT_DIR/dist/snmp-agent" "-config" "$SCRIPT_DIR/configs/snmp/config.json" "${cmd[@]:1}")
+            ;;
+        ipmi)
+            cmd=("$SCRIPT_DIR/dist/ipmi-agent" "-config" "$SCRIPT_DIR/configs/ipmi/config.json" "${cmd[@]:1}")
+            ;;
+        redfish)
+            cmd=("$SCRIPT_DIR/dist/redfish-agent" "-config" "$SCRIPT_DIR/configs/redfish/config.json" "${cmd[@]:1}")
+            ;;
+        webproxy)
+            cmd=("$SCRIPT_DIR/dist/webproxy-agent" "-config" "$SCRIPT_DIR/configs/webproxy/config.json" "${cmd[@]:1}")
+            ;;
+        telemetry)
+            cmd=("$SCRIPT_DIR/dist/telemetry-agent" "-config" "$SCRIPT_DIR/configs/telemetry/config.json" "${cmd[@]:1}")
+            ;;
+        sflow)
+            cmd=("$SCRIPT_DIR/dist/telemetry-agent" "-config" "$SCRIPT_DIR/configs/sflow/config.json" "${cmd[@]:1}")
+            ;;
+        webserver)
+            cmd=("$SCRIPT_DIR/dist/webserver" "-config" "$SCRIPT_DIR/configs/webserver/config.json" "${cmd[@]:1}")
+            ;;
+        proxy)
+            cmd=("$SCRIPT_DIR/dist/proxy-agent" "-config" "$SCRIPT_DIR/configs/proxy/config.json" "${cmd[@]:1}")
+            ;;
+    esac
+
+    # Smart path resolution for exec
+    for i in "${!cmd[@]}"; do
+        if [[ "${cmd[$i]}" != /* ]]; then
+            if [ -f "$PWD/${cmd[$i]}" ]; then
+                cmd[$i]="$(realpath "$PWD/${cmd[$i]}")"
+            elif [ -f "$SCRIPT_DIR/dist/${cmd[$i]}" ]; then
+                cmd[$i]="$SCRIPT_DIR/dist/${cmd[$i]}"
+            elif [ -f "$SCRIPT_DIR/${cmd[$i]}" ]; then
+                cmd[$i]="$(realpath "$SCRIPT_DIR/${cmd[$i]}")"
+            elif [ -f "$SCRIPT_DIR/configs/${cmd[$i]}" ]; then
+                cmd[$i]="$(realpath "$SCRIPT_DIR/configs/${cmd[$i]}")"
+            fi
+        fi
+    done
     
     local pid_file="$STATE_DIR/$name.pid"
     if [ ! -f "$pid_file" ]; then
@@ -720,19 +765,42 @@ function show_config() {
     [ -z "$inner_pid" ] && inner_pid="$pid"
 
     local config_dir="/proc/$inner_pid/root/configs"
-    if [ ! -d "$config_dir" ]; then
-        echo "[-] No staged config found for '$name' in container."
-        exit 1
+    echo "[+] Configuration for sensor '$name':"
+    echo ""
+    local found_any=0
+    if [ -d "$config_dir" ]; then
+        while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            found_any=1
+            rel="${f#$config_dir/}"
+            echo -e "\e[1;36m=== [Primary] $rel ===\e[0m"
+            cat "$f"
+            echo ""
+        done < <(find "$config_dir" -type f | sort)
     fi
 
-    echo "[+] Staged config files for '$name' (read from container tmpfs):"
-    echo ""
-    while IFS= read -r f; do
-        rel="${f#$config_dir/}"
-        echo -e "\e[1;36m=== $rel ===\e[0m"
-        cat "$f"
-        echo ""
-    done < <(find "$config_dir" -type f | sort)
+    # Also display configs from any detached exec agents
+    local pdir="$PERSIST_DIR/$name/execs"
+    if [ -d "$pdir" ]; then
+        for f in "$pdir"/*; do
+            [ -f "$f" ] || continue
+            mapfile -t exec_cmd < "$f"
+            for ((i=0; i<${#exec_cmd[@]}; i++)); do
+                local arg="${exec_cmd[$i]}"
+                local next_arg="${exec_cmd[$((i+1))]}"
+                if [[ "$arg" == "-config" || "$arg" == "-c" ]] && [ -n "$next_arg" ] && [ -f "$next_arg" ]; then
+                    found_any=1
+                    echo -e "\e[1;35m=== [Exec: $(basename "${exec_cmd[0]}")] $(basename "$next_arg") ($next_arg) ===\e[0m"
+                    cat "$next_arg"
+                    echo ""
+                fi
+            done
+        done
+    fi
+
+    if [ "$found_any" -eq 0 ]; then
+        echo "[-] No config files found for '$name'."
+    fi
 }
 
 case "$1" in
